@@ -86,6 +86,17 @@ export async function getCatalogMovieByTitleSearch(title: string) {
   return results[0];
 }
 
+// Strict title match for "does this movie already exist in the catalog" checks.
+// Unlike getCatalogMovieByTitleSearch, this never matches on summary/sighting text —
+// a submission titled "Titanic" must not resolve to some other movie whose synopsis
+// happens to mention Titanic.
+export async function getCatalogMovieByExactTitle(title: string) {
+  const normalized = title.trim().toLowerCase();
+  if (!normalized) return undefined;
+  const allMovies = await getCatalogMovies();
+  return allMovies.find((movie) => movie.title.trim().toLowerCase() === normalized);
+}
+
 // SQL for catalog search with pg_trgm fuzzy matching + sighting content
 const SQL_SEARCH_WITH_TRGM = `
   SELECT m.id,

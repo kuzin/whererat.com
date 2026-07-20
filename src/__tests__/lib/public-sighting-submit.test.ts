@@ -6,7 +6,7 @@ vi.mock("@/lib/moderation-store", () => ({
 }));
 vi.mock("@/lib/movie-catalog", () => ({
   getCatalogMovieByImdbId: vi.fn().mockResolvedValue(null),
-  getCatalogMovieByTitleSearch: vi.fn().mockResolvedValue(null),
+  getCatalogMovieByExactTitle: vi.fn().mockResolvedValue(null),
 }));
 vi.mock("@/lib/media-storage", () => ({
   persistSightingFiles: vi.fn().mockResolvedValue([]),

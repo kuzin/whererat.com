@@ -12,7 +12,7 @@ import {
   type SightingImageSlot,
 } from "@/lib/whererat";
 import { addSubmission } from "@/lib/moderation-store";
-import { getCatalogMovieByImdbId, getCatalogMovieByTitleSearch } from "@/lib/movie-catalog";
+import { getCatalogMovieByImdbId, getCatalogMovieByExactTitle } from "@/lib/movie-catalog";
 import {
   persistSightingFiles,
   parseSightingImageGalleryForm,
@@ -159,7 +159,7 @@ export async function executePublicSightingSubmit(
 
     const existingMovie =
       (imdbId ? await getCatalogMovieByImdbId(imdbId) : undefined) ??
-      (await getCatalogMovieByTitleSearch(movieTitle));
+      (await getCatalogMovieByExactTitle(movieTitle));
 
     const sightingImages = await persistSightingUploadsFromForm(formData);
     const firstImage = sightingImages[0];
