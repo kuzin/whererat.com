@@ -11,7 +11,7 @@ import {
   searchCatalogMovies,
   getCatalogStatsWithCommunity,
 } from "@/lib/movie-catalog";
-import { getMergedSightingsForMovie } from "@/lib/moderation-store";
+import { getMergedSightingsForMovie, getMovieIdsWithRodentType } from "@/lib/moderation-store";
 import {
   CatalogFilters,
   CatalogPagination,
@@ -92,7 +92,9 @@ export default async function Home({
   const deletedMovieIds = await getDeletedMovieIds();
   const catalogMovies = await getCatalogMovies();
   const movieIndexById = new Map(catalogMovies.map((movie, index) => [movie.id, index]));
-  const filteredResults = (await searchCatalogMovies({ query, genre, rodentType })).filter(
+  const rodentMovieIds =
+    rodentType === "all" ? undefined : await getMovieIdsWithRodentType(rodentType);
+  const filteredResults = (await searchCatalogMovies({ query, genre, rodentMovieIds })).filter(
     (movie) => !deletedMovieIds.has(movie.id),
   );
   const resultMetrics = await Promise.all(
