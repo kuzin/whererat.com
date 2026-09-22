@@ -140,9 +140,48 @@ async function fetchOmdbTotalEpisodeCount(params: {
 
 const IMDB_GRAPHQL_URL = "https://api.graphql.imdb.com/";
 
-async function fetchImdbTrivia(imdbId: string): Promise<unknown[]> {
+/**
+ * IMDb's public GraphQL endpoint rejects requests without a Referer with a bare 403.
+ * Every caller here degrades to an empty result, so a missing header shows up as a
+ * movie page with no reviews/media/related rather than as an error — keep the header,
+ * and log failures so the next outage isn't silent.
+ */
+async function fetchImdbGraphql<T>(
+  label: string,
+  query: string,
+): Promise<T | undefined> {
   try {
-    const query = `
+    const res = await fetch(IMDB_GRAPHQL_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Referer: "https://www.imdb.com/",
+      },
+      body: JSON.stringify({ query }),
+      cache: "no-store",
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!res.ok) {
+      console.warn(`[imdb-sync] ${label}: HTTP ${res.status}`);
+      return undefined;
+    }
+    const json = (await res.json()) as { data?: T; errors?: unknown[] };
+    if (json.errors?.length) {
+      console.warn(`[imdb-sync] ${label}: ${JSON.stringify(json.errors).slice(0, 300)}`);
+    }
+    return json.data;
+  } catch (error) {
+    console.warn(
+      `[imdb-sync] ${label}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return undefined;
+  }
+}
+
+async function fetchImdbTrivia(imdbId: string): Promise<unknown[]> {
+  const data = await fetchImdbGraphql<{ title?: { trivia?: { edges?: unknown[] } } }>(
+    `trivia ${imdbId}`,
+    `
       query {
         title(id: "${imdbId}") {
           trivia(first: 50) {
@@ -159,20 +198,9 @@ async function fetchImdbTrivia(imdbId: string): Promise<unknown[]> {
           }
         }
       }
-    `;
-    const res = await fetch(IMDB_GRAPHQL_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query }),
-      cache: "no-store",
-      signal: AbortSignal.timeout(30_000),
-    });
-    if (!res.ok) return [];
-    const json = (await res.json()) as { data?: { title?: { trivia?: { edges?: unknown[] } } } };
-    return json?.data?.title?.trivia?.edges ?? [];
-  } catch {
-    return [];
-  }
+    `,
+  );
+  return data?.title?.trivia?.edges ?? [];
 }
 
 // ---------------------------------------------------------------------------
@@ -180,8 +208,9 @@ async function fetchImdbTrivia(imdbId: string): Promise<unknown[]> {
 // ---------------------------------------------------------------------------
 
 async function fetchImdbReviews(imdbId: string): Promise<unknown[]> {
-  try {
-    const query = `
+  const data = await fetchImdbGraphql<{ title?: { reviews?: { edges?: unknown[] } } }>(
+    `reviews ${imdbId}`,
+    `
       query {
         title(id: "${imdbId}") {
           reviews(first: 20) {
@@ -198,20 +227,9 @@ async function fetchImdbReviews(imdbId: string): Promise<unknown[]> {
           }
         }
       }
-    `;
-    const res = await fetch(IMDB_GRAPHQL_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query }),
-      cache: "no-store",
-      signal: AbortSignal.timeout(30_000),
-    });
-    if (!res.ok) return [];
-    const json = (await res.json()) as { data?: { title?: { reviews?: { edges?: unknown[] } } } };
-    return json?.data?.title?.reviews?.edges ?? [];
-  } catch {
-    return [];
-  }
+    `,
+  );
+  return data?.title?.reviews?.edges ?? [];
 }
 
 /** Normalise an IMDb date string (various formats) to "YYYY-MM-DD". */
@@ -282,8 +300,10 @@ function extractRatFacts(edges: unknown[]): string[] {
 // ---------------------------------------------------------------------------
 
 export async function fetchImdbRelated(imdbId: string): Promise<ImdbRelatedTitle[]> {
-  try {
-    const query = `
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const data = await fetchImdbGraphql<Record<string, any>>(
+      `related ${imdbId}`,
+      `
       query {
         title(id: "${imdbId}") {
           moreLikeThisTitles(first: 12) {
@@ -299,19 +319,10 @@ export async function fetchImdbRelated(imdbId: string): Promise<ImdbRelatedTitle
           }
         }
       }
-    `;
-    const res = await fetch(IMDB_GRAPHQL_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query }),
-      cache: "no-store",
-      signal: AbortSignal.timeout(30_000),
-    });
-    if (!res.ok) return [];
+    `,
+    );
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const json = (await res.json()) as Record<string, any>;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const edges: any[] = json?.data?.title?.moreLikeThisTitles?.edges ?? [];
+    const edges: any[] = data?.title?.moreLikeThisTitles?.edges ?? [];
     return edges.flatMap((edge) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const node = (edge as any)?.node;
@@ -326,9 +337,6 @@ export async function fetchImdbRelated(imdbId: string): Promise<ImdbRelatedTitle
         } satisfies ImdbRelatedTitle,
       ];
     });
-  } catch {
-    return [];
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -338,8 +346,10 @@ export async function fetchImdbRelated(imdbId: string): Promise<ImdbRelatedTitle
 export async function fetchImdbMedia(
   imdbId: string,
 ): Promise<{ videos: ImdbVideo[]; images: ImdbImage[] }> {
-  try {
-    const query = `
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const data = await fetchImdbGraphql<Record<string, any>>(
+      `media ${imdbId}`,
+      `
       query {
         title(id: "${imdbId}") {
           primaryVideos(first: 10) {
@@ -366,20 +376,11 @@ export async function fetchImdbMedia(
           }
         }
       }
-    `;
-    const res = await fetch(IMDB_GRAPHQL_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ query }),
-      cache: "no-store",
-      signal: AbortSignal.timeout(30_000),
-    });
-    if (!res.ok) return { videos: [], images: [] };
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const json = (await res.json()) as Record<string, any>;
+    `,
+    );
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const videoEdges: any[] = json?.data?.title?.primaryVideos?.edges ?? [];
+    const videoEdges: any[] = data?.title?.primaryVideos?.edges ?? [];
     const videos: ImdbVideo[] = videoEdges.flatMap((edge) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const node = (edge as any)?.node;
@@ -396,7 +397,7 @@ export async function fetchImdbMedia(
     });
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const imageEdges: any[] = json?.data?.title?.images?.edges ?? [];
+    const imageEdges: any[] = data?.title?.images?.edges ?? [];
     const images: ImdbImage[] = imageEdges.flatMap((edge) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const node = (edge as any)?.node;
@@ -413,9 +414,6 @@ export async function fetchImdbMedia(
     });
 
     return { videos, images };
-  } catch {
-    return { videos: [], images: [] };
-  }
 }
 
 // ---------------------------------------------------------------------------
