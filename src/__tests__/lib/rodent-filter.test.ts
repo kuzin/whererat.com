@@ -19,6 +19,34 @@ vi.mock("@/lib/community-movie-store", () => ({ ensureCommunityMovieForSubmissio
 import { getRodentTypesByMovieId, getMovieIdsWithRodentType } from "@/lib/moderation-store";
 import { getSightingOverrides, getDeletedSightingIds } from "@/lib/sighting-edit-store";
 import { getCatalogMovieByImdbId, getCatalogMovieByTitleSearch } from "@/lib/movie-catalog";
+import type { Movie } from "@/lib/whererat";
+
+/** Only `id` is read by the code under test; the rest satisfies the Movie shape. */
+function movieStub(id: string): Movie {
+  return {
+    id,
+    slug: id,
+    title: `Movie ${id}`,
+    releaseYear: 2020,
+    runtimeMinutes: 100,
+    genres: [],
+    posterTone: "bg-stone-700",
+    posterUrl: "",
+    backdropUrl: "",
+    posterAlt: "",
+    externalIds: { imdb: "tt0000001" },
+    summary: "",
+    metadata: {
+      tagline: "",
+      rating: "",
+      director: "",
+      originalLanguage: "",
+      productionCountries: [],
+      metadataProvider: "IMDb seed",
+      lastSyncedAt: "2026-01-01",
+    },
+  };
+}
 
 const mockGetSightingOverrides = vi.mocked(getSightingOverrides);
 const mockGetDeletedSightingIds = vi.mocked(getDeletedSightingIds);
@@ -67,9 +95,8 @@ beforeEach(() => {
   mockGetSightingOverrides.mockResolvedValue({});
   mockGetDeletedSightingIds.mockResolvedValue(new Set());
   mockGetCatalogMovieByTitleSearch.mockResolvedValue(undefined);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   mockGetCatalogMovieByImdbId.mockImplementation(async (id: string) =>
-    id === "tt0000001" ? ({ id: "movie-1" } as any) : undefined,
+    id === "tt0000001" ? movieStub("movie-1") : undefined,
   );
 });
 

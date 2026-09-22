@@ -81,7 +81,8 @@ export async function getCatalogMovieByImdbId(imdbIdOrUrl: string) {
   return allMovies.find((movie) => movie.externalIds.imdb === imdbId);
 }
 
-export async function getCatalogMovieByTitleSearch(title: string) {
+/** Undefined when the search finds nothing — every caller already guards for it. */
+export async function getCatalogMovieByTitleSearch(title: string): Promise<Movie | undefined> {
   const results = await searchCatalogMovies({ query: title });
   return results[0];
 }
