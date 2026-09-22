@@ -53,8 +53,39 @@ function posterOrFallback(poster: string | undefined) {
   return poster && poster !== "N/A" ? poster : "";
 }
 
+/**
+ * Sequels are titled inconsistently across IMDb ("Evil Dead II" vs "Evil Dead 2"),
+ * so fold roman numerals to digits before comparing. Single letters are left alone —
+ * "V for Vendetta" and "X" are titles, not sequel numbers.
+ */
+const ROMAN_NUMERALS: Record<string, string> = {
+  ii: "2", iii: "3", iv: "4", vi: "6", vii: "7", viii: "8", ix: "9",
+  xi: "11", xii: "12", xiii: "13", xiv: "14", xv: "15",
+};
+
+function foldRomanNumerals(value: string) {
+  return value.replace(/\b[ivx]{2,}\b/g, (token) => ROMAN_NUMERALS[token] ?? token);
+}
+
 function normalizeSearchTerm(value: string) {
-  return value.trim().replace(/\s+/g, " ").toLowerCase();
+  return foldRomanNumerals(value.trim().replace(/\s+/g, " ").toLowerCase());
+}
+
+const ARABIC_TO_ROMAN: Record<string, string> = Object.fromEntries(
+  Object.entries(ROMAN_NUMERALS).map(([roman, arabic]) => [arabic, roman]),
+);
+
+/**
+ * OMDb's `s=` endpoint matches titles literally, so "Evil Dead 2" never returns
+ * tt0092991 ("Evil Dead II"). Return the numeral-swapped spelling so we can search
+ * both and merge, rather than leaving the real title out of the candidate pool.
+ */
+function buildNumeralVariantQuery(query: string): string | undefined {
+  const variant = query.replace(
+    /\b(\d{1,2})\b/g,
+    (token) => ARABIC_TO_ROMAN[token] ?? token,
+  );
+  return variant === query ? undefined : variant;
 }
 
 function readSeriesYearRange(snapshot: Record<string, unknown> | undefined): string | undefined {
@@ -275,6 +306,25 @@ export async function GET(request: Request) {
     );
   }
 
+  // OMDb returns up to 10 per page; if we got a full page there are likely more.
+  // Read this before merging variant results, which would inflate the count.
+  const hasMore = searchItems?.length === 10;
+
+  // Merge in the numeral-swapped spelling ("Evil Dead 2" → "Evil Dead II"). OMDb's
+  // literal title match means one spelling can miss the real title entirely.
+  const numeralVariant = buildNumeralVariantQuery(normalizedQuery);
+  if (searchItems && numeralVariant) {
+    const variantPayload = await fetchOmdbSearch(numeralVariant, apiKey, page);
+    if (variantPayload?.Response === "True" && variantPayload.Search?.length) {
+      const seen = new Set(searchItems.map((item) => item.imdbID.toLowerCase()));
+      for (const item of variantPayload.Search) {
+        if (seen.has(item.imdbID.toLowerCase())) continue;
+        seen.add(item.imdbID.toLowerCase());
+        searchItems.push(item);
+      }
+    }
+  }
+
   // Boost results that are already in our catalog — they're more relevant to sighting submitters
   if (searchItems) {
     const catalogImdbIds = new Set(
@@ -287,7 +337,11 @@ export async function GET(request: Request) {
         item,
         score:
           scoreTitleByQuery(item.Title, normalizedQuery) +
-          (catalogImdbIds.has(item.imdbID.toLowerCase()) ? 20 : 0),
+          (catalogImdbIds.has(item.imdbID.toLowerCase()) ? 20 : 0) +
+          // IMDb carries stub entries for unreleased/abandoned projects that share a
+          // title with the real film but have no poster, cast or credits. Submitters
+          // can't tell them apart, so sink them below real records.
+          (posterOrFallback(item.Poster) ? 0 : -12),
       }))
       .sort((a, b) => b.score - a.score)
       .map(({ item }) => item);
@@ -318,8 +372,6 @@ export async function GET(request: Request) {
     if (deletedImdbIds.has(item.imdbID.toLowerCase())) return false;
     return item.Type === "movie" || item.Type === "series";
   });
-  // OMDb returns up to 10 per page; if we got a full page there are likely more
-  const hasMore = searchItems.length === 10;
   const visibleItems = filteredItems.slice(0, 10);
   const details = await Promise.all(
     visibleItems.map((item) => fetchOmdbDetails(item.imdbID, apiKey)),
