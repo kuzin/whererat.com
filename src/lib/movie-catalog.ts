@@ -151,11 +151,17 @@ const SQL_SEARCH_NO_TRGM = `
 export async function searchCatalogMovies({
   query,
   genre,
-  rodentType,
+  rodentMovieIds,
 }: {
   query?: string;
   genre?: string;
-  rodentType?: string;
+  /**
+   * Movie ids matching the active rodent-type filter, or undefined for no filter.
+   * Resolved by the caller via `getMovieIdsWithRodentType` — visible sightings are
+   * merged from approved submissions, which lives in moderation-store and would be
+   * a circular import here.
+   */
+  rodentMovieIds?: Set<string>;
 }): Promise<Movie[]> {
   const allMovies = await getCatalogMovies();
   const normalizedQuery = query?.trim();
@@ -164,17 +170,9 @@ export async function searchCatalogMovies({
   const genreFiltered =
     !genre || genre === "all" ? allMovies : allMovies.filter((m) => m.genres.includes(genre));
 
-  // Apply rodent type filter: keep only movies with at least one matching sighting
-  let rodentFiltered = genreFiltered;
-  if (rodentType && rodentType !== "all") {
-    const pool = getDbPool();
-    const result = await pool.query<{ movie_id: string }>(
-      `SELECT DISTINCT movie_id FROM sightings WHERE $1 = ANY(rodent_types) AND is_deleted = false`,
-      [rodentType],
-    );
-    const matchingMovieIds = new Set(result.rows.map((r) => r.movie_id));
-    rodentFiltered = genreFiltered.filter((m) => matchingMovieIds.has(m.id));
-  }
+  const rodentFiltered = rodentMovieIds
+    ? genreFiltered.filter((m) => rodentMovieIds.has(m.id))
+    : genreFiltered;
 
   if (!normalizedQuery) return rodentFiltered;
 

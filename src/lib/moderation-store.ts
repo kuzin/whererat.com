@@ -451,6 +451,66 @@ async function submissionToSyntheticSighting(
 /**
  * Static catalog sightings plus approved-queue rows resolved to catalog movies (by IMDb id or title).
  */
+/**
+ * Effective rodent types per movie, over the same merged view the movie pages
+ * render: base `sightings` rows plus approved submissions, with sighting
+ * overrides applied and deleted sightings removed.
+ *
+ * The browse filter used to query `sightings` directly. That table is empty in
+ * production — every visible sighting is a synthetic one derived from an
+ * approved submission — so the filter matched nothing for every rodent type.
+ */
+export async function getRodentTypesByMovieId(): Promise<Map<string, Set<string>>> {
+  const pool = getDbPool();
+  const [{ submissions: storedSubs }, baseRows, sightingOverrides, deletedSightingIds] =
+    await Promise.all([
+      readModerationStore(),
+      pool.query<{ id: string; movie_id: string; rodent_types: string[] | null }>(
+        `select id, movie_id, rodent_types from sightings where is_deleted = false`,
+      ),
+      getSightingOverrides(),
+      getDeletedSightingIds(),
+    ]);
+
+  const byMovie = new Map<string, Set<string>>();
+  const add = (movieId: string, sightingId: string, rodentTypes?: string[]) => {
+    if (deletedSightingIds.has(sightingId)) return;
+    const overridden = sightingOverrides[sightingId]?.rodentTypes;
+    const effective = overridden?.length ? overridden : rodentTypes;
+    // Sightings with no explicit types render as rats, so match the "rat" filter.
+    const types = effective?.length ? effective : ["rat"];
+    const set = byMovie.get(movieId) ?? new Set<string>();
+    for (const type of types) set.add(type);
+    byMovie.set(movieId, set);
+  };
+
+  for (const row of baseRows.rows) {
+    add(row.movie_id, row.id, row.rodent_types ?? undefined);
+  }
+
+  // Mirrors submissionToSyntheticSighting's movie resolution (IMDb id, then title).
+  for (const submission of storedSubs) {
+    if (submission.status !== "approved") continue;
+    const movie =
+      (submission.imdbId ? await getCatalogMovieByImdbId(submission.imdbId) : undefined) ??
+      (await getCatalogMovieByTitleSearch(submission.movieTitle));
+    if (!movie) continue;
+    add(movie.id, `queue-${submission.id}`, submission.rodentTypes);
+  }
+
+  return byMovie;
+}
+
+/** Movie ids with at least one visible sighting of the given rodent type. */
+export async function getMovieIdsWithRodentType(rodentType: string): Promise<Set<string>> {
+  const byMovie = await getRodentTypesByMovieId();
+  const ids = new Set<string>();
+  for (const [movieId, types] of byMovie) {
+    if (types.has(rodentType)) ids.add(movieId);
+  }
+  return ids;
+}
+
 export async function getMergedSightingsForMovie(movieId: string): Promise<Sighting[]> {
   const pool = getDbPool();
   const [
