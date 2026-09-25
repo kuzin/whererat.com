@@ -16,7 +16,7 @@ import {
 } from "@/lib/community-movie-store";
 import {
   getCatalogMovieByImdbId,
-  getCatalogMovieByTitleSearch,
+  getCatalogMovieByExactTitle,
 } from "@/lib/movie-catalog";
 import { getDbPool } from "@/lib/db";
 
@@ -414,7 +414,7 @@ async function submissionToSyntheticSighting(
   const movie =
     (submission.imdbId
       ? await getCatalogMovieByImdbId(submission.imdbId)
-      : undefined) ?? (await getCatalogMovieByTitleSearch(submission.movieTitle));
+      : undefined) ?? (await getCatalogMovieByExactTitle(submission.movieTitle));
   if (!movie || movie.id !== expectedMovieId) return undefined;
   const name = submission.submittedBy.trim();
   const headline = getSubmissionSightingTitle(submission);
@@ -637,7 +637,7 @@ export async function reviewSubmission({
   const lookupImdb = normalizeImdbId(reviewedSubmission.imdbId ?? "");
   const existingCatalogMovie =
     (lookupImdb ? await getCatalogMovieByImdbId(lookupImdb) : undefined) ??
-    (await getCatalogMovieByTitleSearch(reviewedSubmission.movieTitle));
+    (await getCatalogMovieByExactTitle(reviewedSubmission.movieTitle));
   if (
     (decision === "approved" || decision === "edited and approved") &&
     !existingCatalogMovie

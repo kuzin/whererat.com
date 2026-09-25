@@ -32,7 +32,7 @@ import { moderateSubmission, removeSubmission, rereviewSubmission, resyncAllMovi
 import { readModerationStore } from "@/lib/moderation-store";
 import {
   getCatalogMovieByImdbId,
-  getCatalogMovieByTitleSearch,
+  getCatalogMovieByExactTitle,
   getCatalogStatsWithCommunity,
 } from "@/lib/movie-catalog";
 import { ResyncAllButton } from "@/components/moderation/resync-all-button";
@@ -123,7 +123,7 @@ export default async function ModerationPage({
       const movie =
         (submission.imdbId
           ? await getCatalogMovieByImdbId(submission.imdbId)
-          : undefined) ?? (await getCatalogMovieByTitleSearch(submission.movieTitle));
+          : undefined) ?? (await getCatalogMovieByExactTitle(submission.movieTitle));
       return movie ? ([submission.id, getMoviePath(movie)] as const) : undefined;
     }),
   );
@@ -153,7 +153,7 @@ export default async function ModerationPage({
       const movie =
         (submission.imdbId
           ? await getCatalogMovieByImdbId(submission.imdbId)
-          : undefined) ?? (await getCatalogMovieByTitleSearch(submission.movieTitle));
+          : undefined) ?? (await getCatalogMovieByExactTitle(submission.movieTitle));
       return [submission.id, movie] as const;
     }),
   );
