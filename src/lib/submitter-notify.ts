@@ -11,6 +11,7 @@
 import { sendBrandedEmail } from "@/lib/email-send";
 import { renderBrandedEmail, type EmailContentBlock } from "@/lib/email-template";
 import { type Submission } from "@/lib/whererat";
+import { optInConfirmUrl } from "@/lib/opt-in-token";
 import { getSubscriber } from "@/lib/email-preferences-store";
 import { getModeratorAccounts } from "@/lib/auth";
 
@@ -53,7 +54,7 @@ function oneLine(value: string): string {
   return value.replace(/[\r\n]+/g, " ").trim();
 }
 
-async function buildReceiptEmail(submission: Submission) {
+async function buildReceiptEmail(submission: Submission, offerNewsOptIn: boolean) {
   const headline = oneLine(submission.title?.trim() || movieDisplay(submission));
   const subject = `We got your sighting: ${headline}`;
 
@@ -73,28 +74,53 @@ async function buildReceiptEmail(submission: Submission) {
     },
   ];
 
+  // They ticked "send me updates" on the form. An address typed into a public form
+  // proves nothing, so subscribing needs a click from the mailbox owner. Skipped
+  // if they're already subscribed (the footer then shows the unsubscribe link).
+  const footer = await getFooter(submission.submitterEmail);
+  if (offerNewsOptIn && submission.submitterEmail && !footer.footerUnsubscribeUrl) {
+    blocks.push(
+      { kind: "divider" },
+      {
+        kind: "paragraph",
+        text: "You asked to hear about new WhereRat updates. Confirm below and we'll add this address. If it wasn't you, just ignore this.",
+        muted: true,
+      },
+      {
+        kind: "button",
+        button: {
+          label: "Yes, send me updates",
+          href: optInConfirmUrl(siteUrl(), submission.submitterEmail),
+        },
+      },
+    );
+  }
+
   const { html, text } = renderBrandedEmail({
     preheader: `Your sighting “${headline}” is in the moderation queue.`,
     heading: "Thanks for the sighting!",
     emoji: "🐀",
     centered: true,
-    ...(await getFooter(submission.submitterEmail)),
+    ...footer,
     blocks,
   });
 
   return { subject, html, text };
 }
 
-export async function notifySubmitterOfReceipt(submission: Submission): Promise<void> {
+export async function notifySubmitterOfReceipt(
+  submission: Submission,
+  options?: { offerNewsOptIn?: boolean },
+): Promise<void> {
   try {
-    await sendReceipt(submission);
+    await sendReceipt(submission, options?.offerNewsOptIn === true);
   } catch (error) {
     // Best-effort: a failed e-mail must never fail (or crash after) the submission.
     console.error("[submitter-notify] receipt failed:", error);
   }
 }
 
-async function sendReceipt(submission: Submission): Promise<void> {
+async function sendReceipt(submission: Submission, offerNewsOptIn: boolean): Promise<void> {
   const to = submission.submitterEmail?.trim();
   if (!to) return;
 
@@ -102,7 +128,7 @@ async function sendReceipt(submission: Submission): Promise<void> {
   const moderatorEmails = getModeratorAccounts().map((m) => m.email.toLowerCase());
   if (moderatorEmails.includes(to.toLowerCase())) return;
 
-  const { subject, html, text } = await buildReceiptEmail(submission);
+  const { subject, html, text } = await buildReceiptEmail(submission, offerNewsOptIn);
   await sendBrandedEmail({ to, subject, html, text, logTag: "submitter-notify" });
 }
 

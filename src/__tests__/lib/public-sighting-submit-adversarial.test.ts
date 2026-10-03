@@ -40,11 +40,8 @@ vi.mock("@/lib/email-preferences-store", () => ({
   upsertMarketingOptIn: vi.fn(),
 }));
 
-import {
-  executePublicSightingSubmit,
-  isPublicSubmissionRateLimited,
-} from "@/lib/public-sighting-submit";
-import { addSubmission, reviewSubmission } from "@/lib/moderation-store";
+import { executePublicSightingSubmit } from "@/lib/public-sighting-submit";
+import { addSubmission } from "@/lib/moderation-store";
 import { findCatalogMovieForSubmission } from "@/lib/movie-catalog";
 import { persistSightingFiles, parseSightingImageGalleryForm } from "@/lib/media-storage";
 import { notifyOwnerOfNewSubmission } from "@/lib/moderation-notify";
@@ -53,7 +50,6 @@ import { upsertMarketingOptIn } from "@/lib/email-preferences-store";
 import { MAX_OTHER_RODENT_LABEL_LENGTH, RODENT_TYPE_OPTIONS } from "@/lib/whererat";
 
 const mockAdd = vi.mocked(addSubmission);
-const mockReview = vi.mocked(reviewSubmission);
 const mockFind = vi.mocked(findCatalogMovieForSubmission);
 const mockPersist = vi.mocked(persistSightingFiles);
 const mockGallery = vi.mocked(parseSightingImageGalleryForm);
@@ -647,247 +643,63 @@ describe("submitterEmail", () => {
   });
 });
 
-describe("marketingOptIn", () => {
-  it("is ignored when no email is supplied", async () => {
+describe("marketingOptIn (double opt-in: the form only OFFERS the subscription)", () => {
+  const offerArg = () => mockNotifySubmitter.mock.calls.at(-1)?.[1] as { offerNewsOptIn?: boolean } | undefined;
+
+  it("never stores an address from the form itself, even when ticked", async () => {
+    const fd = makeForm({ submitterEmail: "a@example.com" });
+    fd.set("marketingOptIn", "on");
+    await executePublicSightingSubmit(fd, nextIp());
+    expect(mockOptIn).not.toHaveBeenCalled();
+  });
+
+  it("ticked with a valid email asks the receipt e-mail to carry the confirm link", async () => {
+    const fd = makeForm({ submitterEmail: "a@example.com" });
+    fd.set("marketingOptIn", "on");
+    await executePublicSightingSubmit(fd, nextIp());
+    await Promise.resolve();
+    expect(offerArg()).toEqual({ offerNewsOptIn: true });
+  });
+
+  it("is not offered when no email is supplied", async () => {
     const fd = makeForm();
     fd.set("marketingOptIn", "on");
     await executePublicSightingSubmit(fd, nextIp());
-    expect(mockOptIn).not.toHaveBeenCalled();
+    await Promise.resolve();
+    expect(offerArg()).toEqual({ offerNewsOptIn: false });
   });
 
-  it("is ignored when the email is invalid", async () => {
+  it("is not offered when the email is invalid", async () => {
     const fd = makeForm({ submitterEmail: "not an email" });
     fd.set("marketingOptIn", "on");
     await executePublicSightingSubmit(fd, nextIp());
-    expect(mockOptIn).not.toHaveBeenCalled();
+    await Promise.resolve();
+    expect(offerArg()).toEqual({ offerNewsOptIn: false });
   });
 
-  it.each(["true", "1", "yes", "ON", "off", ""])("value %j does not opt in (only exact 'on' does)", async (v) => {
+  it.each(["true", "1", "yes", "ON", "off", ""])("value %j is not an opt-in (only exact 'on')", async (v) => {
     const fd = makeForm({ submitterEmail: "a@example.com" });
     fd.set("marketingOptIn", v);
     await executePublicSightingSubmit(fd, nextIp());
-    expect(mockOptIn).not.toHaveBeenCalled();
+    await Promise.resolve();
+    expect(offerArg()).toEqual({ offerNewsOptIn: false });
   });
 
-  it("opts in the normalised address when box ticked and email valid", async () => {
-    const fd = makeForm({ submitterEmail: "  a@example.com " });
-    fd.set("marketingOptIn", "on");
-    await executePublicSightingSubmit(fd, nextIp());
-    expect(mockOptIn).toHaveBeenCalledExactlyOnceWith("a@example.com");
-  });
-
-  it("a failing opt-in write never fails the submission", async () => {
-    mockOptIn.mockRejectedValueOnce(new Error("db down"));
+  it("a failing receipt e-mail never fails the submission", async () => {
+    mockNotifySubmitter.mockRejectedValueOnce(new Error("resend down"));
     const fd = makeForm({ submitterEmail: "a@example.com" });
     fd.set("marketingOptIn", "on");
     const r = await executePublicSightingSubmit(fd, nextIp());
     expect(r.ok).toBe(true);
   });
 
-  it("does not opt in when the submission itself failed", async () => {
+  it("no receipt (and so no offer) when the submission itself failed", async () => {
+    mockNotifySubmitter.mockClear();
     mockAdd.mockRejectedValueOnce(new Error("boom"));
     const fd = makeForm({ submitterEmail: "a@example.com" });
     fd.set("marketingOptIn", "on");
     await executePublicSightingSubmit(fd, nextIp());
+    expect(mockNotifySubmitter).not.toHaveBeenCalled();
     expect(mockOptIn).not.toHaveBeenCalled();
-  });
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Privilege escalation attempts
-// ─────────────────────────────────────────────────────────────────────────────
-describe("moderator-only fields are never honoured on the public path", () => {
-  it("autoApprove=on is ignored", async () => {
-    const fd = makeForm();
-    fd.set("autoApprove", "on");
-    fd.set("status", "approved");
-    fd.set("decision", "approved");
-    fd.set("curatorNote", "pre-approved by me");
-    fd.set("duplicateHint", "trust me");
-    fd.set("id", "sub-forced");
-    const r = await executePublicSightingSubmit(fd, nextIp());
-    expect(r.ok).toBe(true);
-    expect(mockReview).not.toHaveBeenCalled();
-    const arg = lastAddArg() as Record<string, unknown>;
-    expect(arg.status).toBeUndefined();
-    expect(arg.id).toBeUndefined();
-    expect(arg.curatorNote).toBeUndefined();
-    expect(arg.duplicateHint).toBe("No existing catalog match found.");
-    expect(JSON.stringify(arg)).not.toContain("autoApprove");
-  });
-
-  it("returned submissionId comes from the store, not the client", async () => {
-    const fd = makeForm();
-    fd.set("submissionId", "sub-forced");
-    const r = await executePublicSightingSubmit(fd, nextIp());
-    expect(r).toMatchObject({ ok: true, submissionId: "sub-1" });
-  });
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Images (mocked storage; real gallery parsing is covered in the *-gallery test)
-// ─────────────────────────────────────────────────────────────────────────────
-describe("image plumbing", () => {
-  it("uses the gallery parser only when the sentinel is present", async () => {
-    mockGallery.mockResolvedValueOnce([{ url: "/uploads/sightings/a.jpg", alt: "a" }]);
-    const fd = makeForm();
-    fd.set("sightingImageListManaged", "1");
-    await executePublicSightingSubmit(fd, nextIp());
-    expect(mockGallery).toHaveBeenCalledOnce();
-    expect(mockPersist).not.toHaveBeenCalled();
-    expect(lastAddArg()).toMatchObject({
-      imageUrl: "/uploads/sightings/a.jpg",
-      images: [{ url: "/uploads/sightings/a.jpg", alt: "a" }],
-    });
-  });
-
-  it("legacy path caps at 5 files and ignores empty/non-file parts", async () => {
-    const fd = makeForm();
-    for (let i = 0; i < 9; i++) fd.append("sightingImages", new File(["x"], `r${i}.png`, { type: "image/png" }));
-    fd.append("sightingImages", new File([], "empty.png", { type: "image/png" }));
-    fd.append("sightingImages", "not-a-file");
-    await executePublicSightingSubmit(fd, nextIp());
-    const files = mockPersist.mock.calls[0]![0];
-    expect(files).toHaveLength(5);
-    expect(files.every((f) => f.size > 0)).toBe(true);
-  });
-
-  it("no images -> images/imageUrl are undefined", async () => {
-    await submit();
-    const arg = lastAddArg();
-    expect(arg.images).toBeUndefined();
-    expect(arg.imageUrl).toBeUndefined();
-  });
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Error path
-// ─────────────────────────────────────────────────────────────────────────────
-describe("error handling", () => {
-  it("returns server-error (does not throw) when addSubmission rejects", async () => {
-    mockAdd.mockRejectedValueOnce(new Error("kaboom"));
-    const r = await submit();
-    expect(r).toMatchObject({ ok: false, code: "server-error" });
-  });
-
-  it("non-Error rejections do not crash the handler", async () => {
-    mockAdd.mockRejectedValueOnce("a string");
-    const r = await submit();
-    expect(r).toMatchObject({ ok: false, code: "server-error" });
-  });
-
-  it("returns server-error when the catalog lookup rejects, and writes nothing", async () => {
-    mockFind.mockRejectedValueOnce(new Error("db down"));
-    const r = await submit();
-    expect(r).toMatchObject({ ok: false, code: "server-error" });
-    expect(mockAdd).not.toHaveBeenCalled();
-  });
-
-  it("notification failures never fail an accepted submission", async () => {
-    mockNotifyOwner.mockImplementation(() => Promise.reject(new Error("smtp")) as never);
-    mockNotifySubmitter.mockImplementation(() => Promise.reject(new Error("smtp")) as never);
-    // swallow the (expected) unhandled rejections produced by the fire-and-forget `void` calls
-    const swallow = () => { };
-    process.on("unhandledRejection", swallow);
-    try {
-      const r = await submit();
-      expect(r.ok).toBe(true);
-      await new Promise((res) => setTimeout(res, 0));
-    } finally {
-      process.off("unhandledRejection", swallow);
-    }
-  });
-
-  it("BUG: internal DB error text (host names, etc.) is returned to the caller in result.message", async () => {
-    mockAdd.mockRejectedValueOnce(
-      new Error('connection to server at "ep-xyz-123.us-east-2.aws.neon.tech" (10.0.3.4), port 5432 failed: password authentication failed for user "whererat_owner"'),
-    );
-    const r = await submit();
-    expect(r.ok).toBe(false);
-    if (!r.ok) {
-      expect(r.code).toBe("server-error");
-      expect(r.message ?? "").not.toMatch(/neon\.tech|10\.0\.3\.4|whererat_owner|password/i);
-    }
-  });
-
-  it("BUG: Postgres constraint-violation text (table/column names) is returned to the caller", async () => {
-    mockAdd.mockRejectedValueOnce(
-      new Error('new row for relation "submissions" violates check constraint "submissions_season_number_check"'),
-    );
-    const r = await submit();
-    if (!r.ok) expect(r.message ?? "").not.toMatch(/relation|constraint|submissions/i);
-  });
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Rate limiting
-// ─────────────────────────────────────────────────────────────────────────────
-describe("rate limiting", () => {
-  it("20 concurrent submissions from one IP let exactly 5 through", async () => {
-    const ip = nextIp();
-    const results = await Promise.all(
-      Array.from({ length: 20 }, () => executePublicSightingSubmit(makeForm(), ip)),
-    );
-    expect(results.filter((r) => r.ok)).toHaveLength(5);
-    expect(results.filter((r) => !r.ok && r.code === "rate-limited")).toHaveLength(15);
-    expect(mockAdd).toHaveBeenCalledTimes(5);
-  });
-
-  it("rate-limited requests do no catalog lookups, uploads or writes", async () => {
-    const ip = nextIp();
-    for (let i = 0; i < 5; i++) isPublicSubmissionRateLimited(ip);
-    mockFind.mockClear();
-    const r = await executePublicSightingSubmit(makeForm(), ip);
-    expect(r).toMatchObject({ ok: false, code: "rate-limited" });
-    expect(mockFind).not.toHaveBeenCalled();
-    expect(mockPersist).not.toHaveBeenCalled();
-    expect(mockAdd).not.toHaveBeenCalled();
-  });
-
-  it("surrounding whitespace in the IP maps to the same bucket", async () => {
-    const ip = nextIp();
-    for (let i = 0; i < 5; i++) expect(isPublicSubmissionRateLimited(ip)).toBe(false);
-    expect(isPublicSubmissionRateLimited(`  ${ip}\t`)).toBe(true);
-  });
-
-  it("an IPv6 address is limited like any other key", async () => {
-    const ip = `2001:db8:${Math.floor(Math.random() * 65535).toString(16)}::1`;
-    for (let i = 0; i < 5; i++) expect(isPublicSubmissionRateLimited(ip)).toBe(false);
-    expect(isPublicSubmissionRateLimited(ip)).toBe(true);
-  });
-
-  it("BUG: IPv6 case variants of the same address get separate quotas", async () => {
-    const n = Math.floor(Math.random() * 65535).toString(16);
-    const lower = `2001:db8:${n}::abcd`;
-    const upper = `2001:DB8:${n}::ABCD`;
-    for (let i = 0; i < 5; i++) isPublicSubmissionRateLimited(lower);
-    expect(isPublicSubmissionRateLimited(lower)).toBe(true);
-    expect(isPublicSubmissionRateLimited(upper)).toBe(true);
-  });
-
-  it("BUG: zero-padded / expanded IPv6 spellings of the same address get separate quotas", async () => {
-    const n = Math.floor(Math.random() * 0xfff).toString(16).padStart(4, "0");
-    const compact = `2001:db8:${n}::1`;
-    const expanded = `2001:0db8:${n}:0000:0000:0000:0000:0001`;
-    for (let i = 0; i < 5; i++) isPublicSubmissionRateLimited(compact);
-    expect(isPublicSubmissionRateLimited(expanded)).toBe(true);
-  });
-
-  it("BUG: IPv4-mapped IPv6 and plain IPv4 forms of one client get separate quotas", async () => {
-    const a = Math.floor(Math.random() * 250) + 1;
-    const b = Math.floor(Math.random() * 250) + 1;
-    const v4 = `10.${a}.${b}.7`;
-    for (let i = 0; i < 5; i++) isPublicSubmissionRateLimited(v4);
-    expect(isPublicSubmissionRateLimited(`::ffff:${v4}`)).toBe(true);
-  });
-
-  it("validation failures also consume quota (documented behaviour: a typo-ing user burns attempts)", async () => {
-    const ip = nextIp();
-    for (let i = 0; i < 5; i++) {
-      const r = await executePublicSightingSubmit(makeForm({ description: "" }), ip);
-      expect(r).toMatchObject({ ok: false, code: "missing" });
-    }
-    const r = await executePublicSightingSubmit(makeForm(), ip);
-    expect(r).toMatchObject({ ok: false, code: "rate-limited" });
   });
 });

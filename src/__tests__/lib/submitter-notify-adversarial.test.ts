@@ -10,6 +10,7 @@ vi.mock("@/lib/email-send", () => ({ sendBrandedEmail: vi.fn() }));
 vi.mock("@/lib/email-preferences-store", () => ({ getSubscriber: vi.fn() }));
 vi.mock("@/lib/auth", () => ({
   getModeratorAccounts: vi.fn(() => [{ id: "admin", email: "Admin@WhereRat.com" }]),
+  signForPurpose: vi.fn(() => "test-signature"),
 }));
 
 import { notifySubmitterOfReceipt, notifySubmitterOfDecision } from "@/lib/submitter-notify";
@@ -97,5 +98,41 @@ describe("notifySubmitterOfReceipt", () => {
   it("BUG: a failing subscriber lookup makes notifySubmitterOfDecision reject instead of being best-effort", async () => {
     mockSubscriber.mockRejectedValueOnce(new Error("db down"));
     await expect(notifySubmitterOfDecision(sub(), "approved")).resolves.toBeUndefined();
+  });
+});
+
+describe("news opt-in confirmation in the receipt e-mail", () => {
+  const sent = () => mockSend.mock.calls.at(-1)![0];
+
+  it("offered + not subscribed -> a confirm button with a signed link, and a plain-text link", async () => {
+    await notifySubmitterOfReceipt(sub(), { offerNewsOptIn: true });
+    const { html, text } = sent();
+    expect(html).toContain("Yes, send me updates");
+    expect(html).toMatch(/href="https:\/\/[^"]*\/confirm-subscription\?token=[^"]+"/);
+    expect(text).toContain("/confirm-subscription?token=");
+  });
+
+  it("not offered -> no confirm button", async () => {
+    await notifySubmitterOfReceipt(sub());
+    await notifySubmitterOfReceipt(sub(), { offerNewsOptIn: false });
+    for (const [mail] of mockSend.mock.calls) expect(mail.html).not.toContain("confirm-subscription");
+  });
+
+  it("offered but already subscribed -> no confirm button, unsubscribe link instead", async () => {
+    mockSubscriber.mockResolvedValue({ email: "alice@example.com", unsubscribeToken: "tok123" });
+    await notifySubmitterOfReceipt(sub(), { offerNewsOptIn: true });
+    expect(sent().html).not.toContain("confirm-subscription");
+    expect(sent().html).toContain("/unsubscribed?token=tok123");
+  });
+
+  it("the confirm link is for the submitter's own address only (not a moderator's)", async () => {
+    await notifySubmitterOfReceipt(sub({ submitterEmail: "admin@whererat.com" }), { offerNewsOptIn: true });
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it("decision e-mails never carry a confirm button", async () => {
+    await notifySubmitterOfDecision(sub(), "approved");
+    await notifySubmitterOfDecision(sub(), "rejected");
+    for (const [mail] of mockSend.mock.calls) expect(mail.html).not.toContain("confirm-subscription");
   });
 });

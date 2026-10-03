@@ -3,7 +3,8 @@ import Link from "next/link";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import type { Metadata } from "next";
-import { MODERATOR_SESSION_COOKIE, parseModeratorSession, type ModeratorAccount } from "@/lib/auth";
+import { MODERATOR_SESSION_COOKIE, type ModeratorAccount } from "@/lib/auth";
+import { verifyModeratorSession } from "@/lib/moderator-session";
 import { readUserStore } from "@/lib/user-store";
 import { ModalShell } from "@/components/ui/modal-shell";
 import { AvatarUploadField } from "@/components/forms/avatar-upload-field";
@@ -171,7 +172,7 @@ export default async function ManageUsersPage({
     searchParams?: SearchParams;
 }) {
     const cookieStore = await cookies();
-    const session = parseModeratorSession(
+    const session = await verifyModeratorSession(
         cookieStore.get(MODERATOR_SESSION_COOKIE)?.value,
     );
 

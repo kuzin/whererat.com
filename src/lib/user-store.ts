@@ -92,6 +92,33 @@ export async function authenticateStoredModerator(
   );
 }
 
+/**
+ * Current account behind a signed session cookie, or undefined if it was deleted.
+ * A single primary-key read (no seeding), cheap enough to run on every request.
+ */
+export async function getAccountForSession(userId: string) {
+  const pool = getDbPool();
+  const result = await pool.query<{
+    id: string;
+    username: string;
+    display_name: string;
+    email: string;
+    avatar_url: string;
+    role: "owner" | "moderator";
+    password_hash: string;
+  }>(
+    `select id, username, display_name, email, avatar_url, role, password_hash
+     from accounts
+     where id = $1`,
+    [userId],
+  );
+  const row = result.rows[0];
+  if (!row) return undefined;
+  const { password: _password, ...account } = rowToAccount(row);
+  void _password;
+  return account;
+}
+
 export async function getStoredModeratorById(userId: string) {
   const state = await readUserStore();
 

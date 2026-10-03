@@ -5,8 +5,8 @@ import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import {
   MODERATOR_SESSION_COOKIE,
-  parseModeratorSession,
 } from "@/lib/auth";
+import { verifyModeratorSession } from "@/lib/moderator-session";
 import { deleteSubmissionById, reviewSubmission } from "@/lib/moderation-store";
 import { isReviewDecision } from "@/lib/review-decision";
 import { parseMovieIdentityEdits } from "@/lib/movie-identity-form";
@@ -39,7 +39,7 @@ const MAX_AVATAR_UPLOAD_BYTES = 8 * 1024 * 1024;
 
 async function getModeratorOrRedirect() {
   const cookieStore = await cookies();
-  const session = parseModeratorSession(
+  const session = await verifyModeratorSession(
     cookieStore.get(MODERATOR_SESSION_COOKIE)?.value,
   );
 

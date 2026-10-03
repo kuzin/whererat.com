@@ -21,7 +21,7 @@ import {
 } from "@/lib/media-storage";
 import { notifyOwnerOfNewSubmission } from "@/lib/moderation-notify";
 import { notifySubmitterOfReceipt } from "@/lib/submitter-notify";
-import { upsertMarketingOptIn } from "@/lib/email-preferences-store";
+import { consumeSharedRateLimit } from "@/lib/rate-limit-store";
 import {
   SUBMISSION_LIMITS,
   cleanContentWarnings,
@@ -116,6 +116,19 @@ export function isPublicSubmissionRateLimited(clientIp: string): boolean {
   return false;
 }
 
+/**
+ * Shared (Postgres) limit first so it holds across serverless instances; the
+ * per-instance limiter is the fallback when the shared store isn't available.
+ */
+async function isRateLimited(clientIp: string): Promise<boolean> {
+  const shared = await consumeSharedRateLimit({
+    key: `submit:${canonicalizeClientIp(clientIp)}`,
+    max: RATE_LIMIT_MAX,
+    windowMs: RATE_LIMIT_WINDOW_MS,
+  });
+  return shared ?? isPublicSubmissionRateLimited(clientIp);
+}
+
 export type PublicSightingSubmitFailureCode =
   | "rate-limited"
   | "missing"
@@ -144,7 +157,7 @@ export async function executePublicSightingSubmit(
   options?: { skipModerationNotify?: boolean },
 ): Promise<PublicSightingSubmitResult> {
   try {
-    if (isPublicSubmissionRateLimited(clientIp)) {
+    if (await isRateLimited(clientIp)) {
       return { ok: false, code: "rate-limited" };
     }
 
@@ -243,12 +256,12 @@ export async function executePublicSightingSubmit(
     if (!options?.skipModerationNotify) {
       fireAndForget(() => notifyOwnerOfNewSubmission(submissionRow, existingMovie?.slug));
     }
-    fireAndForget(() => notifySubmitterOfReceipt(submissionRow));
-
+    // Ticking the opt-in box only asks us to *offer* the subscription: the receipt
+    // e-mail carries a confirm link, and nothing is stored until it's clicked.
     const marketingOptIn = formData.get("marketingOptIn") === "on";
-    if (submitterEmail && marketingOptIn) {
-      fireAndForget(() => upsertMarketingOptIn(submitterEmail));
-    }
+    fireAndForget(() =>
+      notifySubmitterOfReceipt(submissionRow, { offerNewsOptIn: Boolean(submitterEmail) && marketingOptIn }),
+    );
 
     return {
       ok: true,

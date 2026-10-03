@@ -2,7 +2,8 @@ import Link from "next/link";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import type { Metadata } from "next";
-import { MODERATOR_SESSION_COOKIE, parseModeratorSession } from "@/lib/auth";
+import { MODERATOR_SESSION_COOKIE } from "@/lib/auth";
+import { verifyModeratorSession } from "@/lib/moderator-session";
 import { getAllNewsItems, getNewsItemById, NEWS_ITEM_TYPES, type NewsItem } from "@/lib/news-store";
 import { getSentNewsItemIds } from "@/lib/newsletter-sends-store";
 import { NewsBodyEditor } from "@/components/forms/news-body-editor";
@@ -223,7 +224,7 @@ export default async function ManageNewsPage({
     searchParams?: SearchParams;
 }) {
     const cookieStore = await cookies();
-    const session = parseModeratorSession(
+    const session = await verifyModeratorSession(
         cookieStore.get(MODERATOR_SESSION_COOKIE)?.value,
     );
 

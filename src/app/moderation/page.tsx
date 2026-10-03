@@ -26,8 +26,8 @@ import { SubmissionImageThumbs } from "@/components/moderation/submission-image-
 import { SightingMarkdown } from "@/components/ui/sighting-markdown";
 import {
   MODERATOR_SESSION_COOKIE,
-  parseModeratorSession,
 } from "@/lib/auth";
+import { verifyModeratorSession } from "@/lib/moderator-session";
 import { moderateSubmission, removeSubmission, rereviewSubmission, resyncAllMovies } from "./actions";
 import { readModerationStore } from "@/lib/moderation-store";
 import {
@@ -66,7 +66,7 @@ export default async function ModerationPage({
   searchParams?: SearchParams;
 }) {
   const cookieStore = await cookies();
-  const session = parseModeratorSession(
+  const session = await verifyModeratorSession(
     cookieStore.get(MODERATOR_SESSION_COOKIE)?.value,
   );
 

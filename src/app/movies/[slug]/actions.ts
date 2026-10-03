@@ -5,8 +5,8 @@ import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import {
   MODERATOR_SESSION_COOKIE,
-  parseModeratorSession,
 } from "@/lib/auth";
+import { verifyModeratorSession } from "@/lib/moderator-session";
 import {
   clampApproximateRatCount,
   normalizeSightingTimestampInput,
@@ -45,7 +45,7 @@ const HEX_COLOR_RE = /^#?[0-9a-fA-F]{6}$/;
 
 async function requireModerator() {
   const cookieStore = await cookies();
-  const session = parseModeratorSession(
+  const session = await verifyModeratorSession(
     cookieStore.get(MODERATOR_SESSION_COOKIE)?.value,
   );
   if (!session) {

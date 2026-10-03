@@ -26,6 +26,7 @@ import {
   executePublicSightingSubmit,
 } from "@/lib/public-sighting-submit";
 import { addSubmission } from "@/lib/moderation-store";
+import { consumeSharedRateLimit } from "@/lib/rate-limit-store";
 import { findCatalogMovieForSubmission } from "@/lib/movie-catalog";
 
 const mockAddSubmission = vi.mocked(addSubmission);
@@ -329,5 +330,50 @@ describe("executePublicSightingSubmit — validation", () => {
         duplicateHint: expect.stringContaining("Ratatouille"),
       }),
     );
+  });
+});
+
+describe("executePublicSightingSubmit — shared rate limit", () => {
+  it("blocks when the shared (cross-instance) limiter says the caller is over the limit", async () => {
+    mockAddSubmission.mockClear();
+    vi.mocked(consumeSharedRateLimit).mockResolvedValueOnce(true);
+    const result = await executePublicSightingSubmit(makeValidFormData(), "9.9.9.1");
+    expect(result).toMatchObject({ ok: false, code: "rate-limited" });
+    expect(mockAddSubmission).not.toHaveBeenCalled();
+  });
+
+  it("keys the shared limit by canonical client IP", async () => {
+    await executePublicSightingSubmit(makeValidFormData(), "::FFFF:9.9.9.2");
+    expect(consumeSharedRateLimit).toHaveBeenLastCalledWith(
+      expect.objectContaining({ key: "submit:9.9.9.2", max: 5, windowMs: 3_600_000 }),
+    );
+  });
+
+  it("allows the request when the shared limiter allows it", async () => {
+    vi.mocked(consumeSharedRateLimit).mockResolvedValueOnce(false);
+    const result = await executePublicSightingSubmit(makeValidFormData(), "9.9.9.3");
+    expect(result.ok).toBe(true);
+  });
+
+  it("falls back to the per-instance limiter when the shared store is unavailable", async () => {
+    // Default test stub returns undefined (store unavailable): 5 pass, the 6th is blocked.
+    const ip = `fallback-${Math.random()}`;
+    for (let i = 0; i < 5; i++) {
+      expect((await executePublicSightingSubmit(makeValidFormData(), ip)).ok).toBe(true);
+    }
+    expect(await executePublicSightingSubmit(makeValidFormData(), ip)).toMatchObject({
+      ok: false,
+      code: "rate-limited",
+    });
+  });
+
+  it("does not count a shared-limit block against the in-memory fallback", async () => {
+    const ip = `shared-block-${Math.random()}`;
+    for (let i = 0; i < 3; i++) {
+      vi.mocked(consumeSharedRateLimit).mockResolvedValueOnce(true);
+      await executePublicSightingSubmit(makeValidFormData(), ip);
+    }
+    // Store comes back as unavailable: the fallback bucket for this IP is still empty.
+    expect((await executePublicSightingSubmit(makeValidFormData(), ip)).ok).toBe(true);
   });
 });

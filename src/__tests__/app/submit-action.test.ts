@@ -32,6 +32,14 @@ vi.mock("@/lib/auth", () => ({
   parseModeratorSession: vi.fn(() => h.session),
   canAutoApproveSubmissions: vi.fn((s: unknown) => Boolean(s)),
 }));
+// Privileged actions now verify the account behind the cookie. These tests drive the
+// session through the mocked parseModeratorSession, so delegate to it (the real
+// account re-check is covered in moderator-session.test.ts).
+vi.mock("@/lib/moderator-session", async () => {
+  const auth = await import("@/lib/auth");
+  return { verifyModeratorSession: async (value: string | undefined) => auth.parseModeratorSession(value) };
+});
+
 vi.mock("@/lib/public-sighting-submit", () => ({ executePublicSightingSubmit: vi.fn() }));
 vi.mock("@/lib/moderation-store", () => ({ reviewSubmission: vi.fn().mockResolvedValue(undefined) }));
 

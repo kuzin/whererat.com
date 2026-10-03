@@ -78,6 +78,15 @@ function hmacSign(payload: string): string {
   return createHmac("sha256", SESSION_SECRET).update(payload).digest("base64url");
 }
 
+/**
+ * HMAC for other signed tokens (e.g. e-mail confirmation links). Bound to a
+ * `purpose` so a token minted for one use can never be replayed as another, and
+ * to the session secret so rotating it invalidates outstanding tokens.
+ */
+export function signForPurpose(purpose: string, payload: string): string {
+  return createHmac("sha256", SESSION_SECRET).update(`${purpose}\n${payload}`).digest("base64url");
+}
+
 export function createModeratorSession(account: ModeratorAccount): string {
   const sessionPayload: SignedSessionPayload = {
     id: account.id,

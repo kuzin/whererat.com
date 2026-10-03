@@ -5,8 +5,8 @@ import { redirect } from "next/navigation";
 import {
   canAutoApproveSubmissions,
   MODERATOR_SESSION_COOKIE,
-  parseModeratorSession,
 } from "@/lib/auth";
+import { verifyModeratorSession } from "@/lib/moderator-session";
 import { executePublicSightingSubmit } from "@/lib/public-sighting-submit";
 import { reviewSubmission } from "@/lib/moderation-store";
 
@@ -16,7 +16,7 @@ export async function submitSighting(formData: FormData) {
   const ip = forwarded ? forwarded.split(",")[0].trim() : "unknown";
 
   const cookieStore = await cookies();
-  const moderatorSession = parseModeratorSession(
+  const moderatorSession = await verifyModeratorSession(
     cookieStore.get(MODERATOR_SESSION_COOKIE)?.value,
   );
   const wantsAutoApprove = formData.get("autoApprove") === "on";
