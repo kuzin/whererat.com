@@ -91,6 +91,16 @@ const toastMessages: Record<string, { title: string; body: string; tone: ToastTo
     body: "The sighting has been updated.",
     tone: "success",
   },
+  "sighting-images-saved": {
+    title: "Images saved",
+    body: "The sighting's images were updated.",
+    tone: "success",
+  },
+  "sighting-images-missing": {
+    title: "Sighting not found",
+    body: "It may have been deleted or sent back to the queue. Nothing was saved.",
+    tone: "error",
+  },
   "resync-success": {
     title: "Resynced from IMDb",
     body: "Movie metadata was refreshed with the latest data from OMDb.",

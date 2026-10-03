@@ -3,6 +3,7 @@ import {
   reviewActions as seedReviewActions,
   submissions as seedSubmissions,
   getSubmissionSightingTitle,
+  type Movie,
   type ReviewAction,
   type Sighting,
   type Submission,
@@ -17,6 +18,7 @@ import {
   buildCatalogLookup,
   findCatalogMovieForSubmission,
   getCatalogIdentities,
+  getCatalogListMovies,
   resolveMovieForSubmission,
 } from "@/lib/movie-catalog";
 import { getDbPool, withTransaction } from "@/lib/db";
@@ -626,6 +628,20 @@ export async function getMergedSightingsByMovie(): Promise<Map<string, Sighting[
 
 export async function getMergedSightingsForMovie(movieId: string): Promise<Sighting[]> {
   return mergeSightings(await loadSightingSources(movieId), movieId).get(movieId) ?? [];
+}
+
+export type CatalogSighting = { sighting: Sighting; movie: Movie };
+
+/**
+ * Every visible sighting paired with the movie it is filed under, in catalog order — the
+ * same merged view the movie pages render, for moderation screens that span the catalog.
+ * `movie` comes from {@link getCatalogListMovies}: list fields only, not full metadata.
+ */
+export async function getAllMergedSightings(): Promise<CatalogSighting[]> {
+  const [byMovie, movies] = await Promise.all([getMergedSightingsByMovie(), getCatalogListMovies()]);
+  return movies.flatMap((movie) =>
+    (byMovie.get(movie.id) ?? []).map((sighting) => ({ sighting, movie })),
+  );
 }
 
 export async function reviewSubmission({

@@ -2,7 +2,7 @@ import { test, expect, loginThroughForm } from "../fixtures";
 import { ADMIN, LEGACY, MODERATOR } from "../config";
 import { query } from "../support/db";
 
-const PROTECTED = ["/moderation", "/moderation/users", "/moderation/news", "/profile"];
+const PROTECTED = ["/moderation", "/moderation/users", "/moderation/news", "/moderation/images", "/profile"];
 
 test.describe("access control", () => {
   for (const path of PROTECTED) {
@@ -12,10 +12,10 @@ test.describe("access control", () => {
     });
   }
 
-  test("a moderator (not owner) can use the queue but not user management or news", async ({ page }) => {
+  test("a moderator (not owner) can use the queue but not user management, news or sighting images", async ({ page }) => {
     await loginThroughForm(page, MODERATOR.username, MODERATOR.password);
     await expect(page).toHaveURL(/\/moderation\?toast=logged-in/);
-    for (const path of ["/moderation/users", "/moderation/news"]) {
+    for (const path of ["/moderation/users", "/moderation/news", "/moderation/images", "/moderation/images?edit=queue-x"]) {
       await page.goto(path);
       await expect(page).toHaveURL(/\/moderation$/);
     }

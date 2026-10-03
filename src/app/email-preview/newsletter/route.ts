@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { buildNewsletterDigestEmail, defaultDigestSubject } from "@/lib/news-notify";
 import { getNewsItemById } from "@/lib/news-store";
-import { assertPreviewAllowed, wrapWithPreviewNav, PREVIEW_BASE_URL } from "../_fixtures";
+import { requirePreviewOwner, wrapWithPreviewNav } from "../_fixtures";
 
 export const dynamic = "force-dynamic";
 
@@ -62,7 +62,7 @@ const FAKE_NEWS_ITEMS = [
 const FAKE_UNSUBSCRIBE_TOKEN = "preview-token-abc123";
 
 export async function GET(request: Request) {
-  assertPreviewAllowed();
+  const baseUrl = await requirePreviewOwner(request);
   const { searchParams } = new URL(request.url);
   const headingOverride = searchParams.get("heading") ?? undefined;
   const subheadOverride = searchParams.get("subhead") ?? undefined;
@@ -83,7 +83,7 @@ export async function GET(request: Request) {
     newsItems,
     FAKE_UNSUBSCRIBE_TOKEN,
     subject,
-    PREVIEW_BASE_URL,
+    baseUrl,
     headingOverride,
     subheadOverride,
   );

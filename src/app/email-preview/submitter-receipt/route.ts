@@ -1,15 +1,15 @@
 /**
- * Local-only preview of the "we got your sighting" email sent to submitters.
+ * Owner-only preview of the "we got your sighting" email sent to submitters.
  * Renders fake data — no emails are sent from this route.
  */
 
 import { renderBrandedEmail, type EmailContentBlock } from "@/lib/email-template";
-import { assertPreviewAllowed, FAKE_SUBMISSION, PREVIEW_BASE_URL, wrapWithPreviewNav } from "../_fixtures";
+import { FAKE_SUBMISSION, requirePreviewOwner, wrapWithPreviewNav } from "../_fixtures";
 
 const SUBMITTER_FOOTER = "You're receiving this because you submitted a sighting to WhereRat.";
 
-export function GET() {
-  assertPreviewAllowed();
+export async function GET(request: Request) {
+  const baseUrl = await requirePreviewOwner(request);
   const s = FAKE_SUBMISSION;
   const firstName = s.submittedBy.trim().split(/\s+/)[0];
 
@@ -20,7 +20,7 @@ export function GET() {
     },
     {
       kind: "button",
-      button: { label: "Browse the catalog", href: `${PREVIEW_BASE_URL}/catalog` },
+      button: { label: "Browse the catalog", href: `${baseUrl}/catalog` },
     },
   ];
 
@@ -31,7 +31,7 @@ export function GET() {
     centered: true,
     footerNote: SUBMITTER_FOOTER,
     blocks,
-    baseUrl: PREVIEW_BASE_URL,
+    baseUrl: baseUrl,
   });
 
   return new Response(wrapWithPreviewNav(html, "submitter-receipt"), {

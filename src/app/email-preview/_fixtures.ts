@@ -1,9 +1,31 @@
-import { notFound } from "next/navigation";
+import { cookies } from "next/headers";
+import { redirect } from "next/navigation";
+import { MODERATOR_SESSION_COOKIE } from "@/lib/auth";
+import { verifyModeratorSession } from "@/lib/moderator-session";
 import type { Submission } from "@/lib/whererat";
 
-/** Call at the top of every email-preview route to 404 in production. */
-export function assertPreviewAllowed(): void {
-  if (process.env.NODE_ENV === "production") notFound();
+/**
+ * Call at the top of every email-preview route. Owner only, like the other owner
+ * controls (these used to 404 in production, which also blanked the live preview in the
+ * newsletter composer). Returns the origin the preview's links and brand images use, so
+ * they resolve on whichever host is serving it.
+ */
+export async function requirePreviewOwner(request: Request): Promise<string> {
+  const url = new URL(request.url);
+  const cookieStore = await cookies();
+  const session = await verifyModeratorSession(cookieStore.get(MODERATOR_SESSION_COOKIE)?.value);
+  if (!session) redirect(`/login?next=${encodeURIComponent(url.pathname)}`);
+  if (session.role !== "owner") redirect("/moderation");
+  return requestOrigin(request);
+}
+
+/** The host the browser asked for; `request.url` can say localhost behind a proxy or `next start`. */
+function requestOrigin(request: Request): string {
+  const url = new URL(request.url);
+  const first = (name: string) => request.headers.get(name)?.split(",")[0]?.trim() || undefined;
+  const host = first("x-forwarded-host") ?? first("host") ?? url.host;
+  const proto = first("x-forwarded-proto") ?? url.protocol.replace(/:$/, "");
+  return `${proto}://${host}`;
 }
 
 export const FAKE_SUBMISSION: Submission = {
@@ -30,8 +52,6 @@ export const FAKE_SUBMISSION: Submission = {
     { url: "https://picsum.photos/seed/wr-4/240/240", alt: "" },
   ],
 };
-
-export const PREVIEW_BASE_URL = "http://localhost:3000";
 
 const PREVIEWS = [
   { slug: "moderation", label: "Moderator", sublabel: "new sighting" },

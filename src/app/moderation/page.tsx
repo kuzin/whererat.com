@@ -29,7 +29,7 @@ import {
 } from "@/lib/auth";
 import { verifyModeratorSession } from "@/lib/moderator-session";
 import { moderateSubmission, removeSubmission, rereviewSubmission, resyncAllMovies } from "./actions";
-import { readModerationStore } from "@/lib/moderation-store";
+import { getAllMergedSightings, readModerationStore } from "@/lib/moderation-store";
 import {
   findCatalogMovieForSubmission,
   getCatalogMovieByImdbId,
@@ -37,6 +37,7 @@ import {
 } from "@/lib/movie-catalog";
 import { ResyncAllButton } from "@/components/moderation/resync-all-button";
 import { readUserStore } from "@/lib/user-store";
+import { sightingImageCount } from "@/lib/sighting-images-view";
 
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 
@@ -156,6 +157,16 @@ export default async function ModerationPage({
   );
 
   const stats = await getCatalogStatsWithCommunity();
+  // Only the owner-controls badge uses this, so skip the catalog-wide read for moderators.
+  const sightingsWithoutImages =
+    session.role === "owner"
+      ? (await getAllMergedSightings()).filter(({ sighting }) => sightingImageCount(sighting) === 0)
+          .length
+      : 0;
+  const sightingImagesLabel =
+    sightingsWithoutImages > 0
+      ? `Sighting images (${sightingsWithoutImages} without images)`
+      : "Sighting images";
   const userStore = await readUserStore();
   const trustSignalAccounts = [...userStore.accounts]
     .map((account) => ({
@@ -207,6 +218,26 @@ export default async function ModerationPage({
                 <path d="M15 18h-5" />
                 <path d="M10 6h8v4h-8V6Z" />
               </svg>
+            </Link>
+            <Link
+              href={sightingsWithoutImages > 0 ? "/moderation/images?filter=without" : "/moderation/images"}
+              title={sightingImagesLabel}
+              aria-label={sightingImagesLabel}
+              className="wr-btn-ghost relative inline-flex h-11 w-11 items-center justify-center px-0 py-0"
+            >
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                <rect width="18" height="18" x="3" y="3" rx="2" />
+                <circle cx="9" cy="9" r="2" />
+                <path d="m21 15-3.09-3.09a2 2 0 0 0-2.82 0L6 21" />
+              </svg>
+              {sightingsWithoutImages > 0 ? (
+                <span
+                  aria-hidden
+                  className="absolute -right-1.5 -top-1.5 min-w-5 rounded-full border border-amber-700/40 bg-amber-500 px-1 text-center text-[10px] font-black leading-[18px] text-stone-950 dark:border-amber-300/40 dark:bg-amber-400 dark:text-stone-950"
+                >
+                  {sightingsWithoutImages > 99 ? "99+" : sightingsWithoutImages}
+                </span>
+              ) : null}
             </Link>
             <Link
               href="/email-preview/newsletter"
