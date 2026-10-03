@@ -1,3 +1,4 @@
+import { SUBMISSION_LIMITS, cleanText } from "@/lib/submission-input";
 import { normalizeImdbId, type Submission } from "@/lib/whererat";
 
 type MovieIdentityEdits = Partial<Pick<Submission, "movieTitle" | "imdbId">>;
@@ -13,13 +14,13 @@ export function parseMovieIdentityEdits(
   const edits: MovieIdentityEdits = {};
 
   if (formData.has("movieTitle")) {
-    const movieTitle = String(formData.get("movieTitle") ?? "").trim();
+    const movieTitle = cleanText(formData.get("movieTitle"), SUBMISSION_LIMITS.movieTitle);
     if (!movieTitle) return { ok: false };
     edits.movieTitle = movieTitle;
   }
 
   if (formData.has("imdbId")) {
-    const raw = String(formData.get("imdbId") ?? "").trim();
+    const raw = cleanText(formData.get("imdbId"), 200);
     const imdbId = normalizeImdbId(raw);
     if (!imdbId) return { ok: false };
     edits.imdbId = imdbId;

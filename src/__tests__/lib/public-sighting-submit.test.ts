@@ -177,7 +177,8 @@ describe("executePublicSightingSubmit — validation", () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.code).toBe("server-error");
-      expect(result.message).toContain("DB down");
+      // Driver text stays in the server logs, not the API response.
+      expect(result.message).not.toContain("DB down");
     }
   });
 

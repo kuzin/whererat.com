@@ -36,17 +36,25 @@ function movieDisplay(submission: Submission): string {
 
 const SUBMITTER_FOOTER = "You're receiving this because you submitted a sighting to WhereRat.";
 
-async function getFooterNote(email?: string): Promise<string> {
-  if (!email) return SUBMITTER_FOOTER;
+async function getFooter(
+  email?: string,
+): Promise<{ footerNote: string; footerUnsubscribeUrl?: string }> {
+  if (!email) return { footerNote: SUBMITTER_FOOTER };
   const subscriber = await getSubscriber(email);
-  if (!subscriber) return SUBMITTER_FOOTER;
+  if (!subscriber) return { footerNote: SUBMITTER_FOOTER };
+  return {
+    footerNote: SUBMITTER_FOOTER,
+    footerUnsubscribeUrl: `${siteUrl()}/unsubscribed?token=${encodeURIComponent(subscriber.unsubscribeToken)}`,
+  };
+}
 
-  const unsubLink = `${siteUrl()}/unsubscribed?token=${subscriber.unsubscribeToken}`;
-  return `${SUBMITTER_FOOTER}<br><br><span style="font-size:11px;color:#78716c">You also opted in to our news feed. <a href="${unsubLink}" style="color:inherit;text-decoration:underline">Unsubscribe</a>.</span>`;
+/** A header value must be a single line, or the title could inject extra headers. */
+function oneLine(value: string): string {
+  return value.replace(/[\r\n]+/g, " ").trim();
 }
 
 async function buildReceiptEmail(submission: Submission) {
-  const headline = submission.title?.trim() || movieDisplay(submission);
+  const headline = oneLine(submission.title?.trim() || movieDisplay(submission));
   const subject = `We got your sighting: ${headline}`;
 
   const firstName = submission.submittedBy?.trim().split(/\s+/)[0];
@@ -70,7 +78,7 @@ async function buildReceiptEmail(submission: Submission) {
     heading: "Thanks for the sighting!",
     emoji: "🐀",
     centered: true,
-    footerNote: await getFooterNote(submission.submitterEmail),
+    ...(await getFooter(submission.submitterEmail)),
     blocks,
   });
 
@@ -78,6 +86,15 @@ async function buildReceiptEmail(submission: Submission) {
 }
 
 export async function notifySubmitterOfReceipt(submission: Submission): Promise<void> {
+  try {
+    await sendReceipt(submission);
+  } catch (error) {
+    // Best-effort: a failed e-mail must never fail (or crash after) the submission.
+    console.error("[submitter-notify] receipt failed:", error);
+  }
+}
+
+async function sendReceipt(submission: Submission): Promise<void> {
   const to = submission.submitterEmail?.trim();
   if (!to) return;
 
@@ -90,7 +107,7 @@ export async function notifySubmitterOfReceipt(submission: Submission): Promise<
 }
 
 async function buildApprovedEmail(submission: Submission) {
-  const headline = submission.title?.trim() || movieDisplay(submission);
+  const headline = oneLine(submission.title?.trim() || movieDisplay(submission));
   const subject = `Your sighting was approved: ${headline}`;
   const firstName = submission.submittedBy?.trim().split(/\s+/)[0];
   const body = firstName
@@ -110,7 +127,7 @@ async function buildApprovedEmail(submission: Submission) {
     heading: "Your sighting was approved!",
     emoji: "🎉",
     centered: true,
-    footerNote: await getFooterNote(submission.submitterEmail),
+    ...(await getFooter(submission.submitterEmail)),
     blocks,
   });
 
@@ -118,7 +135,7 @@ async function buildApprovedEmail(submission: Submission) {
 }
 
 async function buildRejectedEmail(submission: Submission) {
-  const headline = submission.title?.trim() || movieDisplay(submission);
+  const headline = oneLine(submission.title?.trim() || movieDisplay(submission));
   const subject = `Update on your WhereRat sighting: ${headline}`;
   const firstName = submission.submittedBy?.trim().split(/\s+/)[0];
   const body = firstName
@@ -138,7 +155,7 @@ async function buildRejectedEmail(submission: Submission) {
     heading: "Not quite this time.",
     emoji: "🐭",
     centered: true,
-    footerNote: await getFooterNote(submission.submitterEmail),
+    ...(await getFooter(submission.submitterEmail)),
     blocks,
   });
 
@@ -146,6 +163,17 @@ async function buildRejectedEmail(submission: Submission) {
 }
 
 export async function notifySubmitterOfDecision(
+  submission: Submission,
+  decision: "approved" | "rejected",
+): Promise<void> {
+  try {
+    await sendDecision(submission, decision);
+  } catch (error) {
+    console.error("[submitter-notify] decision e-mail failed:", error);
+  }
+}
+
+async function sendDecision(
   submission: Submission,
   decision: "approved" | "rejected",
 ): Promise<void> {

@@ -3,6 +3,7 @@
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Components } from "react-markdown";
+import { sanitizePosterUrl } from "@/lib/submission-input";
 
 const sightingMarkdownComponents: Components = {
   h1: ({ children }) => (
@@ -126,18 +127,37 @@ const sightingMarkdownComponents: Components = {
   ),
 };
 
+/**
+ * Sighting text is written by the public, so an image can only come from our own
+ * site or an image host we already render. Anything else (a tracking pixel on an
+ * arbitrary server, `javascript:`/`data:` URLs) falls back to its alt text.
+ */
+const sightingMarkdownComponentsRestrictedImages: Components = {
+  ...sightingMarkdownComponents,
+  img: ({ src, alt }) => {
+    const safeSrc = typeof src === "string" ? sanitizePosterUrl(src) : undefined;
+    if (!safeSrc) return <span>{alt ?? ""}</span>;
+    return <img src={safeSrc} alt={alt ?? ""} loading="lazy" className="my-3 max-w-full rounded-lg" />;
+  },
+};
+
 export function SightingMarkdown({
   markdown,
   className = "",
+  trustedImages = false,
 }: {
   markdown: string;
   className?: string;
+  /** Owner-authored content (news) may embed images from any host. */
+  trustedImages?: boolean;
 }) {
   return (
     <div className={`sighting-markdown min-w-0 max-w-none ${className}`.trim()}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
-        components={sightingMarkdownComponents}
+        components={
+          trustedImages ? sightingMarkdownComponents : sightingMarkdownComponentsRestrictedImages
+        }
       >
         {markdown}
       </ReactMarkdown>

@@ -1,6 +1,7 @@
 import { normalizeImdbId, type Movie, type Submission } from "@/lib/whererat";
 import { getDbPool } from "@/lib/db";
 import { syncMovieFromImdb } from "@/lib/movie-imdb-sync";
+import { MAX_RELEASE_YEAR, MIN_RELEASE_YEAR, sanitizePosterUrl } from "@/lib/submission-input";
 
 function slugifyTitle(title: string) {
   return title
@@ -8,17 +9,26 @@ function slugifyTitle(title: string) {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
-    .slice(0, 64);
+    .slice(0, 64)
+    .replace(/-+$/g, "");
+}
+
+type MovieRow = Parameters<typeof rowToMovie>[0];
+
+const MOVIE_COLUMNS =
+  "id, slug, title, release_year, runtime_minutes, genres, poster_tone, poster_url, backdrop_url, poster_alt, imdb_id, tmdb_id, metadata, summary";
+
+/** `release_year` has a check constraint (> 1800, < 3000); anything else would make the INSERT throw. */
+function releaseYearOrCurrent(year: number | undefined): number {
+  const whole = typeof year === "number" && Number.isFinite(year) ? Math.floor(year) : NaN;
+  return whole >= MIN_RELEASE_YEAR && whole <= MAX_RELEASE_YEAR ? whole : new Date().getFullYear();
 }
 
 const COMMUNITY_POSTER_FALLBACK =
   "https://placehold.co/600x900/292524/fef3c7/png?text=Community+Movie";
 
 function normalizePosterUrl(value: string | undefined) {
-  const raw = value?.trim() ?? "";
-  if (!raw || raw === "N/A") return COMMUNITY_POSTER_FALLBACK;
-  if (raw.startsWith("/") || /^https?:\/\//i.test(raw)) return raw;
-  return COMMUNITY_POSTER_FALLBACK;
+  return sanitizePosterUrl(value) ?? COMMUNITY_POSTER_FALLBACK;
 }
 
 function rowToMovie(row: {
@@ -57,129 +67,6 @@ function rowToMovie(row: {
   };
 }
 
-export async function getCommunityMovies() {
-  await backfillCommunityMoviesFromApprovedSubmissions();
-  const pool = getDbPool();
-  const result = await pool.query<{
-    id: string;
-    slug: string;
-    title: string;
-    release_year: number;
-    runtime_minutes: number;
-    genres: string[];
-    poster_tone: string;
-    poster_url: string;
-    backdrop_url: string;
-    poster_alt: string;
-    imdb_id: string;
-    tmdb_id: string | null;
-    metadata: Movie["metadata"];
-    summary: string;
-  }>(
-    `select id, slug, title, release_year, runtime_minutes, genres, poster_tone, poster_url, backdrop_url, poster_alt, imdb_id, tmdb_id, metadata, summary
-     from movies
-     where id like 'community-%' and is_deleted = false
-     order by created_at desc`,
-  );
-  return result.rows
-    .filter((row) => Boolean(normalizeImdbId(row.imdb_id)))
-    .map(rowToMovie);
-}
-
-async function backfillCommunityMoviesFromApprovedSubmissions() {
-  const pool = getDbPool();
-  const approvedRes = await pool.query<{
-    movie_title: string;
-    movie_year: number | null;
-    imdb_id: string | null;
-    movie_poster_url: string | null;
-    description: string;
-  }>(
-    `select movie_title, movie_year, imdb_id, movie_poster_url, description
-     from submissions
-     where status = 'approved'`,
-  );
-  const approved = approvedRes.rows.map((row) => ({
-    movieTitle: row.movie_title,
-    movieYear: row.movie_year ?? undefined,
-    imdbId: row.imdb_id ?? undefined,
-    moviePosterUrl: row.movie_poster_url ?? undefined,
-    description: row.description,
-  })) as Submission[];
-  if (approved.length === 0) return;
-
-  const existingRows = await pool.query<{ id: string; slug: string; title: string; imdb_id: string }>(
-    `select id, slug, title, imdb_id from movies where is_deleted = false`,
-  );
-  const current = existingRows.rows;
-
-  for (const submission of approved) {
-    const title = submission.movieTitle?.trim();
-    if (!title) continue;
-    const imdbId = normalizeImdbId(submission.imdbId ?? "");
-    if (!imdbId) continue;
-    const exists = current.some((movie) => {
-      if (imdbId && movie.imdb_id === imdbId) return true;
-      return movie.title.trim().toLowerCase() === title.toLowerCase();
-    });
-    if (exists) continue;
-
-    const releaseYear =
-      typeof submission.movieYear === "number" && Number.isFinite(submission.movieYear)
-        ? Math.floor(submission.movieYear)
-        : new Date().getFullYear();
-    const slugBase = `${slugifyTitle(title)}-${releaseYear}`;
-    const taken = new Set(current.map((movie) => movie.slug));
-    let slug = slugBase || `submission-${releaseYear}`;
-    let bump = 2;
-    while (taken.has(slug)) {
-      slug = `${slugBase}-${bump}`;
-      bump += 1;
-    }
-
-    await pool.query(
-      `insert into movies
-        (id, slug, title, release_year, runtime_minutes, genres, poster_tone, poster_url, backdrop_url, poster_alt, imdb_id, tmdb_id, summary, metadata, is_deleted)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,null,$12,$13,false)`,
-      [
-        `community-${slug}`,
-        slug,
-        title,
-        releaseYear,
-        1,
-        ["Uncategorized"],
-        "bg-stone-700",
-        normalizePosterUrl(submission.moviePosterUrl),
-        "https://placehold.co/1200x600/292524/fef3c7/png?text=Community+Movie",
-        `Poster for ${title}.`,
-        imdbId,
-        submission.description.trim() || "Community-submitted movie entry.",
-        {
-          tagline: "",
-          rating: "Not Rated",
-          director: "",
-          originalLanguage: "Unknown",
-          productionCountries: [],
-          metadataProvider: "IMDb seed",
-          lastSyncedAt: new Date().toISOString().slice(0, 10),
-          writers: "",
-          cast: "",
-          imdbRating: "",
-          imdbVotes: "",
-          metascore: "",
-          awards: "",
-        },
-      ],
-    );
-    current.push({
-      id: `community-${slug}`,
-      slug,
-      title,
-      imdb_id: imdbId,
-    });
-  }
-}
-
 export async function ensureCommunityMovieForSubmission(
   submission: Pick<Submission, "movieTitle" | "movieYear" | "imdbId" | "moviePosterUrl" | "description">,
 ) {
@@ -193,44 +80,25 @@ export async function ensureCommunityMovieForSubmission(
   }
 
   const pool = getDbPool();
-  const allMoviesRes = await pool.query<{
-    id: string;
-    slug: string;
-    title: string;
-    release_year: number;
-    runtime_minutes: number;
-    genres: string[];
-    poster_tone: string;
-    poster_url: string;
-    backdrop_url: string;
-    poster_alt: string;
-    imdb_id: string;
-    tmdb_id: string | null;
-    metadata: Movie["metadata"];
-    summary: string;
-  }>(
-    `select id, slug, title, release_year, runtime_minutes, genres, poster_tone, poster_url, backdrop_url, poster_alt, imdb_id, tmdb_id, metadata, summary
-     from movies
-     where is_deleted = false`,
-  );
-  const allMovies = allMoviesRes.rows;
   // The IMDb id is the identity: two different titles can share a name ("Life").
-  const existing = allMovies.find((movie) => movie.imdb_id === imdbId);
-  if (existing) return rowToMovie(existing);
+  const live = await pool.query<MovieRow>(
+    `select ${MOVIE_COLUMNS} from movies where imdb_id = $1 and is_deleted = false`,
+    [imdbId],
+  );
+  if (live.rows[0]) return rowToMovie(live.rows[0]);
 
-  const releaseYear =
-    typeof submission.movieYear === "number" && Number.isFinite(submission.movieYear)
-      ? Math.floor(submission.movieYear)
-      : new Date().getFullYear();
-  const slugBase = `${slugifyTitle(title)}-${releaseYear}`;
-  const taken = new Set(allMovies.map((movie) => movie.slug));
-  let slug = slugBase || `submission-${releaseYear}`;
-  let bump = 2;
-  while (taken.has(slug)) {
-    slug = `${slugBase}-${bump}`;
-    bump += 1;
-  }
+  // A deleted movie still owns its imdb_id / slug (UNIQUE is not partial), so an
+  // explicit approval brings it back instead of colliding with it.
+  const restored = await pool.query<MovieRow>(
+    `update movies set is_deleted = false, updated_at = now()
+     where imdb_id = $1
+     returning ${MOVIE_COLUMNS}`,
+    [imdbId],
+  );
+  if (restored.rows[0]) return rowToMovie(restored.rows[0]);
 
+  const releaseYear = releaseYearOrCurrent(submission.movieYear);
+  const slugBase = `${slugifyTitle(title) || imdbId}-${releaseYear}`;
   const metadata: Movie["metadata"] = {
     tagline: "",
     rating: "Not Rated",
@@ -246,47 +114,59 @@ export async function ensureCommunityMovieForSubmission(
     metascore: "",
     awards: "",
   };
-  const inserted = await pool.query<{
-    id: string;
-    slug: string;
-    title: string;
-    release_year: number;
-    runtime_minutes: number;
-    genres: string[];
-    poster_tone: string;
-    poster_url: string;
-    backdrop_url: string;
-    poster_alt: string;
-    imdb_id: string;
-    tmdb_id: string | null;
-    metadata: Movie["metadata"];
-    summary: string;
-  }>(
-    `insert into movies
-      (id, slug, title, release_year, runtime_minutes, genres, poster_tone, poster_url, backdrop_url, poster_alt, imdb_id, tmdb_id, summary, metadata, is_deleted)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,null,$12,$13,false)
-     returning id, slug, title, release_year, runtime_minutes, genres, poster_tone, poster_url, backdrop_url, poster_alt, imdb_id, tmdb_id, metadata, summary`,
-    [
-      `community-${slug}`,
-      slug,
-      title,
-      releaseYear,
-      1,
-      ["Uncategorized"],
-      "bg-stone-700",
-      normalizePosterUrl(submission.moviePosterUrl),
-      "https://placehold.co/1200x600/292524/fef3c7/png?text=Community+Movie",
-      `Poster for ${title}.`,
-      imdbId,
-      submission.description.trim() || "Community-submitted movie entry.",
-      metadata,
-    ],
-  );
-  const newMovie = rowToMovie(inserted.rows[0]);
 
-  // Fire-and-forget: enrich with OMDb metadata and IMDb rat facts.
-  // Errors are swallowed inside syncMovieFromImdb so approval is never blocked.
-  void syncMovieFromImdb(newMovie);
+  // Slugs (and ids derived from them) are unique across deleted rows too. If a
+  // concurrent approval takes the slug between our read and insert, pick again.
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const slugRows = await pool.query<{ slug: string }>(`select slug from movies`);
+    const taken = new Set(slugRows.rows.map((row) => row.slug));
+    let slug = slugBase;
+    for (let bump = 2; taken.has(slug); bump += 1) slug = `${slugBase}-${bump}`;
 
-  return newMovie;
+    try {
+      const inserted = await pool.query<MovieRow>(
+        `insert into movies
+          (id, slug, title, release_year, runtime_minutes, genres, poster_tone, poster_url, backdrop_url, poster_alt, imdb_id, tmdb_id, summary, metadata, is_deleted)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,null,$12,$13,false)
+         on conflict (imdb_id) do nothing
+         returning ${MOVIE_COLUMNS}`,
+        [
+          `community-${slug}`,
+          slug,
+          title,
+          releaseYear,
+          1,
+          ["Uncategorized"],
+          "bg-stone-700",
+          normalizePosterUrl(submission.moviePosterUrl),
+          "https://placehold.co/1200x600/292524/fef3c7/png?text=Community+Movie",
+          `Poster for ${title}.`,
+          imdbId,
+          submission.description.trim() || "Community-submitted movie entry.",
+          metadata,
+        ],
+      );
+      if (!inserted.rows[0]) {
+        // Lost a race on imdb_id: the other approval created it, so use theirs.
+        const winner = await pool.query<MovieRow>(
+          `select ${MOVIE_COLUMNS} from movies where imdb_id = $1`,
+          [imdbId],
+        );
+        if (winner.rows[0]) return rowToMovie(winner.rows[0]);
+        continue;
+      }
+      const newMovie = rowToMovie(inserted.rows[0]);
+
+      // Fire-and-forget: enrich with OMDb metadata and IMDb rat facts.
+      // Errors are swallowed inside syncMovieFromImdb so approval is never blocked.
+      void syncMovieFromImdb(newMovie);
+
+      return newMovie;
+    } catch (error) {
+      const code = (error as { code?: string }).code;
+      if (code === "23505" && attempt < 4) continue;
+      throw error;
+    }
+  }
+  throw new Error("Could not allocate a catalog entry for this title. Please try again.");
 }
