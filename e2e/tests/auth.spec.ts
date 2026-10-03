@@ -1,5 +1,5 @@
 import { test, expect, loginThroughForm } from "../fixtures";
-import { ADMIN, LEGACY, MODERATOR } from "../config";
+import { ADMIN, BASE_URL, LEGACY, MODERATOR } from "../config";
 import { query } from "../support/db";
 
 const PROTECTED = ["/moderation", "/moderation/users", "/moderation/news", "/moderation/images", "/profile"];
@@ -63,7 +63,7 @@ test.describe("logging in", () => {
   for (const next of ["//evil.example", "/\\evil.example", "https://evil.example/phish"]) {
     test(`a hostile next=${next} never redirects off-site`, async ({ page }) => {
       await loginThroughForm(page, ADMIN.username, ADMIN.password, next);
-      await expect(page).toHaveURL(/127\.0\.0\.1:3200\/moderation\?toast=logged-in/);
+      await expect(page).toHaveURL(`${BASE_URL}/moderation?toast=logged-in`);
     });
   }
 
