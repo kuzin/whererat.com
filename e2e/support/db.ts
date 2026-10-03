@@ -71,6 +71,43 @@ export async function seedMovie(m: SeedMovie) {
   );
 }
 
+/** A TV series (served under /shows/<slug>) so season/episode flows can be exercised. */
+export const SERIES = { slug: "the-rat-show-2020", title: "The Rat Show", year: 2020, imdbId: "tt8000001" } satisfies SeedMovie;
+
+export async function seedSeries() {
+  await query(
+    `insert into movies (id, slug, title, release_year, runtime_minutes, genres, poster_tone, poster_url, backdrop_url, poster_alt, imdb_id, summary, metadata, is_deleted)
+     values ($1,$2,$3,$4,45,'{Comedy}','bg-stone-700','/favicon.svg','/favicon.svg',$5,$6,$7,$8,false)`,
+    [`seed-${SERIES.slug}`, SERIES.slug, SERIES.title, SERIES.year, `${SERIES.title} poster`, SERIES.imdbId, "A sitcom about a rat.", { ...EMPTY_METADATA, syncSnapshot: { Type: "series", totalSeasons: "3", Year: "2020–" } }],
+  );
+}
+
+export async function seedNews(items: Array<{ id: string; title: string; body: string; type?: string; published?: boolean }>) {
+  for (const n of items) {
+    await query(
+      `insert into news_items (id, title, body, type, author_id, author_name, author_avatar_url, published_at)
+       values ($1,$2,$3,$4,'acct-admin','E2E Admin','/favicon.svg',$5)`,
+      [n.id, n.title, n.body, n.type ?? "announcement", n.published === false ? null : new Date()],
+    );
+  }
+}
+
+/** Approved submissions with images / spoilers / varied rodents, for realistic pages. */
+export async function seedSightings(movie: { title: string; imdbId: string; year: number }, n: number, over: { spoiler?: boolean; kind?: "movie" | "series" } = {}) {
+  for (let i = 1; i <= n; i++) {
+    await query(
+      `insert into submissions (id, movie_title, movie_year, imdb_id, imdb_kind, season_number, episode_number, timestamp_code, title, description, spoiler, approximate_rat_count, status, submitted_by, rodent_types)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'approved','E2E Tester',$13)`,
+      [
+        `seed-sight-${movie.imdbId}-${i}`, movie.title, movie.year, movie.imdbId, over.kind ?? "movie",
+        over.kind === "series" ? 1 + (i % 3) : null, over.kind === "series" ? i : null,
+        `${(i * 7) % 100}%`, `Sighting number ${i}`, `Rat ${i} scurries past the camera. **Bold** and _italic_.`,
+        over.spoiler ?? false, 1 + (i % 4), i % 2 ? ["rat"] : ["mouse"],
+      ],
+    );
+  }
+}
+
 export async function seedAccounts() {
   const rows: Array<[string, string, string, string, string]> = [
     ["acct-admin", ADMIN.username, ADMIN.name, "admin@e2e.test", "owner"],
