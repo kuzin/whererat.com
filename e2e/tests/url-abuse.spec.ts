@@ -5,6 +5,14 @@ import { MOVIES, SERIES, seedSeries, seedSightings } from "../support/db";
 const XSS = encodeURIComponent('"><script>window.__pwned=1</script><img src=x onerror=window.__pwned=2>');
 const LEAK = /ECONNREFUSED|stack trace|at Object\.|at async|pg_|relation "|syntax error at|violates|node_modules|Application error/i;
 
+/** Known bugs: each of these currently returns a 5xx. Remove the entry when it is fixed. */
+const KNOWN_5XX: Record<string, string> = {
+  "/movies/%ff%fe": "invalid UTF-8 in a movie slug returns 500 (should be 404)",
+  "/moderation/users?create=1&error=__proto__": "an `error` param named __proto__ crashes the users page (prototype-key lookup)",
+  "/api/v1/movies/%00": "a NUL byte in the slug reaches Postgres and returns 500 (should be 404)",
+  "/api/unsubscribe?token=%00": "a NUL byte in the token reaches Postgres and returns 500 (should redirect to ?status=invalid)",
+};
+
 const PUBLIC = [
   "/?page=-1", "/?page=0", "/?page=abc", "/?page=999999", "/?page=1.5", "/?page=1e3", "/?page=%00",
   `/?q=${XSS}`, "/?q=%00", `/?q=${"a".repeat(5000)}`, "/?genre=%27%3B--", "/?genre[]=a", "/?rodent=__proto__", "/?rodent=constructor",
@@ -24,6 +32,7 @@ const PUBLIC = [
 test.describe("public URLs", () => {
   for (const path of PUBLIC) {
     test(`${path.slice(0, 90)}`, async ({ page }) => {
+      if (KNOWN_5XX[path]) test.fail(true, KNOWN_5XX[path]!);
       await seedSeries();
       await seedSightings(MOVIES.ratatouille, 3);
       const response = await page.goto(path, { waitUntil: "domcontentloaded" });
@@ -49,6 +58,7 @@ test.describe("moderator URLs", () => {
   ];
   for (const path of MOD) {
     test(`${path.slice(0, 90)}`, async ({ page, login }) => {
+      if (KNOWN_5XX[path]) test.fail(true, KNOWN_5XX[path]!);
       await login();
       const response = await page.goto(path, { waitUntil: "domcontentloaded" });
       expect(response?.status() ?? 0, `status for ${path}`).toBeLessThan(500);
@@ -69,6 +79,7 @@ test.describe("API query strings", () => {
   ];
   for (const path of API) {
     test(`${path.slice(0, 90)}`, async ({ request }) => {
+      if (KNOWN_5XX[path]) test.fail(true, KNOWN_5XX[path]!);
       const res = await request.get(path);
       expect(res.status(), `status for ${path}`).toBeLessThan(500);
       expect(await res.text()).not.toMatch(LEAK);

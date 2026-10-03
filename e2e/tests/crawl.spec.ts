@@ -33,8 +33,6 @@ function watch(page: Page): Problems {
     const url = r.url();
     // Vercel Analytics / Speed Insights scripts only exist on Vercel itself.
     if (url.includes("/_vercel/")) return;
-    // Known bug, pinned separately below: the owner's "Email previews" button 404s in production.
-    if (url.includes("/email-preview/")) return;
     if (r.status() >= 400 && url.startsWith("http://127.0.0.1")) problems.push(`HTTP ${r.status()}: ${url}`);
   });
   page.on("requestfailed", (r) => {
@@ -144,17 +142,4 @@ test.describe("phones: nothing overflows horizontally", () => {
     const { scrollWidth, innerWidth } = await page.evaluate(() => ({ scrollWidth: document.documentElement.scrollWidth, innerWidth: window.innerWidth }));
     expect(scrollWidth).toBeLessThanOrEqual(innerWidth + 1);
   });
-});
-
-test("the owner's 'Email previews' button leads to a working page", async ({ page, login }) => {
-  // Known bug: every /email-preview/* route 404s in production builds (assertPreviewAllowed),
-  // but /moderation still shows the button. Remove test.fail() once it's hidden or enabled for owners.
-  test.fail(true, "Email previews button is a dead link in production");
-  await login();
-  await page.goto("/moderation");
-  const response = await Promise.all([
-    page.waitForResponse((r) => r.url().includes("/email-preview/newsletter") && !r.url().includes("_rsc")),
-    page.getByRole("link", { name: "Email previews" }).click(),
-  ]).then(([r]) => r);
-  expect(response.status()).toBeLessThan(400);
 });
