@@ -49,7 +49,7 @@ vi.mock("@/lib/movie-imdb-sync", () => ({
   fetchImdbMedia: vi.fn(),
   fetchImdbRelated: vi.fn(),
 }));
-vi.mock("@/lib/moderation-store", () => ({ reviewSubmission: vi.fn() }));
+vi.mock("@/lib/moderation-store", () => ({ editApprovedSubmission: vi.fn(), reviewSubmission: vi.fn() }));
 vi.mock("@/lib/sighting-edit-store", () => ({
   deleteSightingById: vi.fn(),
   updateSightingOverride: vi.fn(),
@@ -76,13 +76,14 @@ vi.mock("@/lib/tmdb-banner", () => ({ getTmdbBackdropUrl: vi.fn() }));
 
 import { updateSightingInfo, deleteSighting, deleteMovie } from "@/app/movies/[slug]/actions";
 import { revalidatePath } from "next/cache";
-import { reviewSubmission } from "@/lib/moderation-store";
+import { editApprovedSubmission, reviewSubmission } from "@/lib/moderation-store";
 import { deleteSightingById, updateSightingOverride } from "@/lib/sighting-edit-store";
 import { deleteMovieById } from "@/lib/movie-edit-store";
 import { getCatalogMovieByImdbId, getCatalogMovieBySlug } from "@/lib/movie-catalog";
 import { parseSightingImageGalleryForm } from "@/lib/media-storage";
 
 const mockReview = vi.mocked(reviewSubmission);
+const mockEdit = vi.mocked(editApprovedSubmission);
 const mockOverride = vi.mocked(updateSightingOverride);
 const mockDeleteSighting = vi.mocked(deleteSightingById);
 const mockDeleteMovie = vi.mocked(deleteMovieById);
@@ -133,10 +134,17 @@ const reviewArg = () => {
   return c[0];
 };
 
+const editArg = () => {
+  const c = mockEdit.mock.calls.at(-1);
+  if (!c) throw new Error("editApprovedSubmission not called");
+  return c[0];
+};
+
 beforeEach(() => {
   vi.clearAllMocks();
   h.session = MOD;
   mockReview.mockResolvedValue(undefined);
+  mockEdit.mockResolvedValue(true);
   mockBySlug.mockResolvedValue(movie("ratatouille", "tt0382932"));
   mockByImdb.mockResolvedValue(undefined);
 });
@@ -150,7 +158,7 @@ describe("updateSightingInfo: auth", () => {
       const r = await run(updateSightingInfo, fd);
       expect(r.redirect).toBe("/login");
     }
-    expect(mockReview).not.toHaveBeenCalled();
+    expect(mockEdit).not.toHaveBeenCalled();
     expect(mockOverride).not.toHaveBeenCalled();
     expect(mockGallery).not.toHaveBeenCalled();
     expect(mockRevalidate).not.toHaveBeenCalled();
@@ -194,7 +202,7 @@ describe("updateSightingInfo: required-field validation", () => {
   ])("blank %s redirects back to returnTo and writes nothing", async (_n, extra) => {
     const r = await run(updateSightingInfo, sightingForm({ ...extra, returnTo: "/movies/ratatouille?sort=newest" }));
     expect(r.redirect).toBe("/movies/ratatouille?sort=newest");
-    expect(mockReview).not.toHaveBeenCalled();
+    expect(mockEdit).not.toHaveBeenCalled();
     expect(mockOverride).not.toHaveBeenCalled();
   });
 
@@ -205,17 +213,16 @@ describe("updateSightingInfo: required-field validation", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-describe("updateSightingInfo: queue- sightings go through reviewSubmission", () => {
-  it("strips the queue- prefix, approves-with-edits, and forwards normalised fields", async () => {
+describe("updateSightingInfo: queue- sightings are edited in place, not re-approved", () => {
+  it("strips the queue- prefix, saves the edit, and forwards normalised fields", async () => {
     const r = await run(updateSightingInfo, sightingForm({ approximateRatCount: "99999", spoiler: "on" }));
     expect(mockOverride).not.toHaveBeenCalled();
-    expect(reviewArg()).toMatchObject({
+    expect(editArg()).toMatchObject({
       submissionId: "sub-1",
-      decision: "edited and approved",
       reason: "Edited from movie page.",
       moderator: MOD,
     });
-    expect(reviewArg().edits).toMatchObject({
+    expect(editArg().edits).toMatchObject({
       title: "Rat in kitchen",
       timestamp: "42%",
       description: "Remy appears.",
@@ -225,17 +232,34 @@ describe("updateSightingInfo: queue- sightings go through reviewSubmission", () 
     expect(r.redirect).toBe("/movies/ratatouille?toast=sighting-saved");
   });
 
+  it("never goes through reviewSubmission (which would re-approve, re-log and re-e-mail the submitter)", async () => {
+    await run(updateSightingInfo, sightingForm());
+    expect(mockEdit).toHaveBeenCalledOnce();
+    expect(mockReview).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["/movies/ratatouille", "/movies/ratatouille?toast=sighting-not-live"],
+    ["/movies/ratatouille?sort=newest", "/movies/ratatouille?sort=newest&toast=sighting-not-live"],
+  ])("a sighting no longer approved (returnTo %s) is not saved and says so", async (returnTo, expected) => {
+    mockEdit.mockResolvedValueOnce(false);
+    const r = await run(updateSightingInfo, sightingForm({ imdbId: "tt5442430", movieTitle: "Life", returnTo }));
+    expect(r.redirect).toBe(expected);
+    expect(mockByImdb).not.toHaveBeenCalled();
+    expect(mockRevalidate).toHaveBeenCalledWith("/movies/ratatouille");
+  });
+
   it("identity fields: IMDb URL / upper-case id is normalised, title trimmed", async () => {
     await run(
       updateSightingInfo,
       sightingForm({ movieTitle: "  Ratatouille ", imdbId: "https://www.imdb.com/title/TT0382932/" }),
     );
-    expect(reviewArg().edits).toMatchObject({ movieTitle: "Ratatouille", imdbId: "tt0382932" });
+    expect(editArg().edits).toMatchObject({ movieTitle: "Ratatouille", imdbId: "tt0382932" });
   });
 
   it("a form without identity fields leaves title and imdbId out of the edits", async () => {
     await run(updateSightingInfo, sightingForm());
-    const edits = reviewArg().edits as Record<string, unknown>;
+    const edits = editArg().edits as Record<string, unknown>;
     expect(edits).not.toHaveProperty("movieTitle");
     expect(edits).not.toHaveProperty("imdbId");
   });
@@ -244,10 +268,10 @@ describe("updateSightingInfo: queue- sightings go through reviewSubmission", () 
     ["blank title", { movieTitle: "  " }],
     ["bad id", { movieTitle: "Life", imdbId: "garbage" }],
     ["blank id", { movieTitle: "Life", imdbId: "" }],
-  ])("invalid identity (%s) redirects with toast=invalid-movie and never calls reviewSubmission", async (_n, extra) => {
+  ])("invalid identity (%s) redirects with toast=invalid-movie and saves nothing", async (_n, extra) => {
     const r = await run(updateSightingInfo, sightingForm({ ...extra, returnTo: "/movies/ratatouille" }));
     expect(r.redirect).toBe("/movies/ratatouille?toast=invalid-movie");
-    expect(mockReview).not.toHaveBeenCalled();
+    expect(mockEdit).not.toHaveBeenCalled();
     expect(mockRevalidate).not.toHaveBeenCalled();
   });
 
@@ -285,25 +309,26 @@ describe("updateSightingInfo: queue- sightings go through reviewSubmission", () 
     expect(r.redirect).toBe("/movies/ratatouille?toast=sighting-saved");
   });
 
-  it("the move is decided AFTER reviewSubmission ran (so the move actually happened)", async () => {
+  it("the move is decided AFTER the edit was saved (so the move actually happened)", async () => {
     mockByImdb.mockResolvedValue(movie("life-2017", "tt5442430"));
     const order: string[] = [];
-    mockReview.mockImplementationOnce(async () => {
-      order.push("review");
+    mockEdit.mockImplementationOnce(async () => {
+      order.push("edit");
+      return true;
     });
     mockByImdb.mockImplementationOnce(async () => {
       order.push("lookup");
       return movie("life-2017", "tt5442430");
     });
     await run(updateSightingInfo, sightingForm({ imdbId: "tt5442430", movieTitle: "Life" }));
-    expect(order).toEqual(["review", "lookup"]);
+    expect(order).toEqual(["edit", "lookup"]);
   });
 
   it("images: legacy list capped at 5; first image mirrored into imageUrl", async () => {
     const fd = sightingForm({ imageListManaged: "1" });
     for (let i = 0; i < 8; i++) fd.append("finalImageUrl", `/uploads/sightings/${i}.png`);
     await run(updateSightingInfo, fd);
-    const e = reviewArg().edits as { images: Array<{ url: string }>; imageUrl?: string };
+    const e = editArg().edits as { images: Array<{ url: string }>; imageUrl?: string };
     expect(e.images).toHaveLength(5);
     expect(e.imageUrl).toBe("/uploads/sightings/0.png");
   });
@@ -311,11 +336,11 @@ describe("updateSightingInfo: queue- sightings go through reviewSubmission", () 
   it("SQL-ish strings are only ever passed through as values", async () => {
     const evil = `x'); DROP TABLE sightings;--`;
     await run(updateSightingInfo, sightingForm({ title: evil, description: evil, curatorNote: evil, movieTitle: evil, imdbId: "tt0382932" }));
-    expect(reviewArg().edits).toMatchObject({ title: evil, description: evil, curatorNote: evil, movieTitle: evil });
+    expect(editArg().edits).toMatchObject({ title: evil, description: evil, curatorNote: evil, movieTitle: evil });
   });
 
   it("a store failure propagates (no success toast)", async () => {
-    mockReview.mockRejectedValueOnce(new Error("boom"));
+    mockEdit.mockRejectedValueOnce(new Error("boom"));
     await expect(updateSightingInfo(sightingForm())).rejects.toThrow("boom");
   });
 });
@@ -324,9 +349,10 @@ describe("updateSightingInfo: queue- sightings go through reviewSubmission", () 
 describe("updateSightingInfo: non-queue sightings use sighting overrides", () => {
   const seed = (extra: Record<string, string> = {}) => sightingForm({ sightingId: "seed-sighting-1", ...extra });
 
-  it("calls updateSightingOverride and NOT reviewSubmission", async () => {
+  it("calls updateSightingOverride and NOT the submission store", async () => {
     const r = await run(updateSightingInfo, seed());
     expect(mockReview).not.toHaveBeenCalled();
+    expect(mockEdit).not.toHaveBeenCalled();
     expect(mockOverride).toHaveBeenCalledWith(
       "seed-sighting-1",
       expect.objectContaining({ title: "Rat in kitchen", timestamp: "42%", description: "Remy appears." }),
@@ -345,10 +371,10 @@ describe("updateSightingInfo: non-queue sightings use sighting overrides", () =>
 
   it("an id that merely CONTAINS 'queue-' (or differs in case) is not treated as a queue row", async () => {
     for (const id of ["x-queue-1", "QUEUE-abc", " queue-1".trim().toUpperCase()]) {
-      mockReview.mockClear();
+      mockEdit.mockClear();
       mockOverride.mockClear();
       await run(updateSightingInfo, seed({ sightingId: id }));
-      expect(mockReview, id).not.toHaveBeenCalled();
+      expect(mockEdit, id).not.toHaveBeenCalled();
       expect(mockOverride, id).toHaveBeenCalledOnce();
     }
   });
