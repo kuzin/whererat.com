@@ -69,7 +69,7 @@ beforeEach(() => {
   h.session = undefined;
   h.xff = "198.51.100.7";
   mockExec.mockResolvedValue({ ok: true, submissionId: "sub-9" });
-  mockReview.mockResolvedValue(undefined);
+  mockReview.mockResolvedValue({ applied: true });
 });
 
 describe("submitSighting: autoApprove", () => {

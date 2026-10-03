@@ -4,6 +4,7 @@ function hasValidImdbId(imdbId: string | null | undefined): boolean {
   return Boolean(normalizeImdbId(String(imdbId ?? "")));
 }
 import { getDbPool } from "@/lib/db";
+import { isValidSlug } from "@/lib/identifiers";
 
 const FALLBACK_POSTER = "https://placehold.co/600x900/292524/fef3c7/png?text=Community+Movie";
 const FALLBACK_BACKDROP =
@@ -126,6 +127,8 @@ export async function getCatalogListMovies(): Promise<Movie[]> {
 
 /** One movie by slug — a single-row read, not a scan of the whole catalog. */
 export async function getCatalogMovieBySlug(slug: string) {
+  // A malformed slug can't match anything (and a NUL byte would make Postgres throw).
+  if (!isValidSlug(slug)) return undefined;
   const pool = getDbPool();
   const result = await pool.query<MovieRow>(
     `select ${MOVIE_COLUMNS}, metadata

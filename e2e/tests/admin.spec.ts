@@ -99,17 +99,15 @@ test.describe("user management", () => {
   });
 
   test("the system can't be left without an owner by demoting the only owner", async ({ page, login }) => {
-    // Known bug: nothing stops an owner demoting themselves when they're the only owner, which
-    // leaves nobody able to manage users or news (recovery needs a manual DB edit).
-    test.fail(true, "the last owner can be demoted");
     await query(`update accounts set role = 'moderator' where username <> $1`, [ADMIN.username]);
     expect(await ownerCount()).toBe(1);
     await login();
     await page.goto("/moderation/users?edit=acct-admin");
     await page.getByLabel("Role").selectOption("moderator");
     await page.getByRole("button", { name: "Save changes" }).click();
-    await page.waitForLoadState("networkidle");
-    expect(await ownerCount(), "no owner left: nobody can manage users or news").toBeGreaterThanOrEqual(1);
+    await expect(page).toHaveURL(/error=last_owner/);
+    await expect(page.getByText("There must always be at least one owner").first()).toBeVisible();
+    expect(await ownerCount(), "no owner left: nobody can manage users or news").toBe(1);
   });
 
   test("the last owner can't be deleted (there is no delete control for your own row)", async ({ page, login }) => {
@@ -119,6 +117,23 @@ test.describe("user management", () => {
     // Three accounts, but only the two other ones can be deleted: there's no control on your own row.
     await expect(page.locator('button[title="Delete"]')).toHaveCount(2);
     expect(await ownerCount()).toBe(1);
+  });
+
+  test("an owner can hand over: promote someone else first, then step down", async ({ page, login }) => {
+    await login();
+    await page.goto("/moderation/users?edit=acct-mod");
+    await page.getByLabel("Role").selectOption("owner");
+    await page.getByRole("button", { name: "Save changes" }).click();
+    await expect(page).toHaveURL(/toast=user-updated/);
+
+    await page.goto("/moderation/users?edit=acct-admin");
+    await page.getByLabel("Role").selectOption("moderator");
+    await page.getByRole("button", { name: "Save changes" }).click();
+    // They are no longer an owner, so the (owner-only) users page sends them to the queue.
+    await expect(page).toHaveURL(/\/moderation$/);
+    expect(await ownerCount()).toBe(1);
+    const [row] = await query<{ role: string }>(`select role from accounts where username = $1`, [MODERATOR.username]);
+    expect(row!.role).toBe("owner");
   });
 
   test("a display name with markup is shown as text, never run", async ({ page, login }) => {

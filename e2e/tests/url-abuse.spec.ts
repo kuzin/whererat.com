@@ -6,12 +6,7 @@ const XSS = encodeURIComponent('"><script>window.__pwned=1</script><img src=x on
 const LEAK = /ECONNREFUSED|stack trace|at Object\.|at async|pg_|relation "|syntax error at|violates|node_modules|Application error/i;
 
 /** Known bugs: each of these currently returns a 5xx. Remove the entry when it is fixed. */
-const KNOWN_5XX: Record<string, string> = {
-  "/movies/%ff%fe": "invalid UTF-8 in a movie slug returns 500 (should be 404)",
-  "/moderation/users?create=1&error=__proto__": "an `error` param named __proto__ crashes the users page (prototype-key lookup)",
-  "/api/v1/movies/%00": "a NUL byte in the slug reaches Postgres and returns 500 (should be 404)",
-  "/api/unsubscribe?token=%00": "a NUL byte in the token reaches Postgres and returns 500 (should redirect to ?status=invalid)",
-};
+const KNOWN_5XX: Record<string, string> = {};
 
 const PUBLIC = [
   "/?page=-1", "/?page=0", "/?page=abc", "/?page=999999", "/?page=1.5", "/?page=1e3", "/?page=%00",
@@ -22,7 +17,7 @@ const PUBLIC = [
   `/movies/${MOVIES.ratatouille.slug}?editSighting=queue-nonexistent`, `/movies/${MOVIES.ratatouille.slug}?editSighting=${XSS}`, `/movies/${MOVIES.ratatouille.slug}?editMovie=1`,
   `/movies/${MOVIES.ratatouille.slug}?toast=__proto__`, `/movies/${MOVIES.ratatouille.slug}?toast=${XSS}`,
   `/shows/${SERIES.slug}?page=-1&sort=zzz`, `/shows/${MOVIES.ratatouille.slug}`, `/movies/${SERIES.slug}`,
-  "/movies/%2e%2e%2f%2e%2e%2fetc%2fpasswd", "/movies/%00", "/movies/%ff%fe", `/movies/${"x".repeat(5000)}`, "/movies/", "/movies/<script>",
+  "/movies/%2e%2e%2f%2e%2e%2fetc%2fpasswd", "/movies/%00", "/movies/%ff%fe", "/movies/%ff", "/movies/%E0%A4%A", "/shows/%ff%fe", "/shows/%E0%A4%A", "/movies/ok/%ff", `/movies/${"x".repeat(5000)}`, "/movies/", "/movies/<script>",
   `/submit?for=${XSS}&title=${XSS}&year=abc&poster=javascript:alert(1)&status=${XSS}&match=${XSS}`, "/submit?for=tt0000000&title=&year=-1", "/submit?status=__proto__",
   `/login?next=${XSS}&error=${XSS}`, `/login?toast=${XSS}`, `/unsubscribed?status=${XSS}`, `/confirm-subscription?status=${XSS}&token=${XSS}`, `/news?post=${XSS}`, "/news?post=%00",
   "/_next/image?url=%2Fetc%2Fpasswd&w=64&q=75", "/_next/image?url=https%3A%2F%2Fevil.example%2Fx.png&w=64&q=75", "/_next/image?url=%2Ffavicon.svg&w=999999&q=75",
@@ -75,7 +70,7 @@ test.describe("API query strings", () => {
     `/api/v1/movies/${MOVIES.ratatouille.slug}?x=1`, "/api/v1/movies/%00", `/api/v1/movies/${"x".repeat(5000)}`, "/api/v1/movies/..%2f..%2fetc",
     "/api/movies/search?q=", "/api/movies/search?q=a", "/api/movies/search?q=%00", `/api/movies/search?q=${"a".repeat(5000)}`, `/api/movies/search?q=${XSS}`, "/api/movies/search?q=rat&page=-1",
     "/api/movies/episodes", "/api/movies/episodes?imdbId=zzz", "/api/movies/episodes?imdbId=%00&season=-1", "/api/movies/episodes?imdbId=tt0000001&season=99999999999",
-    "/api/unsubscribe?token=%00", `/api/unsubscribe?token=${XSS}`, "/api/cron/imdb-resync?x=1",
+    "/api/v1/movies/%ff%fe", "/api/v1/movies/%E0%A4%A", "/api/unsubscribe?token=%00", `/api/unsubscribe?token=${XSS}`, "/api/cron/imdb-resync?x=1",
   ];
   for (const path of API) {
     test(`${path.slice(0, 90)}`, async ({ request }) => {

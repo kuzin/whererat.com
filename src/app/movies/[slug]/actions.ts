@@ -624,11 +624,12 @@ export async function updateSightingInfo(formData: FormData) {
       const sep = returnTo.includes("?") ? "&" : "?";
       redirect(`${returnTo}${sep}toast=invalid-movie`);
     }
-    await reviewSubmission({
+    const result = await reviewSubmission({
       submissionId,
       decision: "edited and approved",
       moderator,
       reason,
+      expectedStatus: "approved", // a stale form must not re-approve something since rejected / requeued
       edits: {
         ...movieIdentity.edits,
         title,
@@ -646,6 +647,9 @@ export async function updateSightingInfo(formData: FormData) {
           rodentTypes.includes("other") && otherRodentLabel ? otherRodentLabel : undefined,
       },
     });
+    if (!result.applied) {
+      redirect(returnTo.includes("?") ? `${returnTo}&toast=moderation-stale` : `${returnTo}?toast=moderation-stale`);
+    }
     // Re-homed under a different title: the sighting is no longer on this page.
     const newImdbId = movieIdentity.edits.imdbId;
     if (newImdbId && newImdbId !== (await getCatalogMovieBySlug(slug))?.externalIds.imdb) {
@@ -698,6 +702,7 @@ export async function deleteSighting(formData: FormData) {
       decision: "rejected",
       moderator,
       reason: "Removed from movie page.",
+      expectedStatus: "approved",
     });
   } else {
     await deleteSightingById(sightingId);

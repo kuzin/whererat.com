@@ -7,8 +7,6 @@ const card = (page: Page, text: string) => page.locator("article", { hasText: te
 
 test.describe("stale moderation tabs", () => {
   test("approving the same sighting twice from two tabs is idempotent (one audit row, one movie, no error)", async ({ page, login, context }) => {
-    // Known bug: reviewSubmission has no state check, so approving an already-approved sighting records a second decision (and re-sends the submitter their email).
-    test.fail(true, "approving an already-approved sighting records a second decision (and re-sends the submitter their email)");
     await seedSubmission({ id: "sub-twice", movieTitle: "Twice Movie", imdbId: "tt7400001", movieYear: 2010, title: "Twice sighting" });
     await login();
     const staleTab = await context.newPage();
@@ -20,7 +18,8 @@ test.describe("stale moderation tabs", () => {
 
     // The other tab still shows it as pending and the moderator clicks Approve there too.
     await card(staleTab, "Twice sighting").getByRole("button", { name: "Approve" }).click();
-    await staleTab.waitForLoadState("networkidle");
+    await expect(staleTab).toHaveURL(/toast=moderation-stale/);
+    await expect(staleTab.getByText("Already handled").first()).toBeVisible();
     await expect(staleTab.getByText("Something went wrong")).toHaveCount(0);
 
     const audits = await query(`select 1 from review_actions where submission_id = 'sub-twice' and action = 'approved'`);
@@ -29,8 +28,6 @@ test.describe("stale moderation tabs", () => {
   });
 
   test("a stale 'Deny' can't unpublish a sighting that was already approved", async ({ page, login, context }) => {
-    // Known bug: reviewSubmission has no state check, so a stale Deny turns a published sighting into rejected.
-    test.fail(true, "a stale Deny turns a published sighting into rejected");
     await seedSubmission({ id: "sub-flip", movieTitle: "Ratatouille", imdbId: MOVIES.ratatouille.imdbId, title: "Published then denied?" });
     await login();
     const staleTab = await context.newPage();
@@ -41,7 +38,7 @@ test.describe("stale moderation tabs", () => {
     await expect(page).toHaveURL(/toast=moderation-approved/);
 
     await card(staleTab, "Published then denied?").getByRole("button", { name: "Deny" }).click();
-    await staleTab.waitForLoadState("networkidle");
+    await expect(staleTab).toHaveURL(/toast=moderation-stale/);
 
     const [row] = await query<{ status: string }>(`select status from submissions where id = 'sub-flip'`);
     expect(row!.status, "an approved sighting must not silently become rejected").toBe("approved");
@@ -50,8 +47,6 @@ test.describe("stale moderation tabs", () => {
   });
 
   test("an edit saved from a stale tab after approval doesn't send the sighting back to pending", async ({ page, login, context }) => {
-    // Known bug: reviewSubmission has no state check, so a stale Save-edits sends an approved sighting back to pending.
-    test.fail(true, "a stale Save-edits sends an approved sighting back to pending");
     await seedSubmission({ id: "sub-edit-stale", movieTitle: "Ratatouille", imdbId: MOVIES.ratatouille.imdbId, title: "Edited from a stale tab" });
     await login();
     const staleTab = await context.newPage();
@@ -62,7 +57,7 @@ test.describe("stale moderation tabs", () => {
     await expect(page).toHaveURL(/toast=moderation-approved/);
 
     await staleTab.getByRole("button", { name: "Save edits" }).click(); // "edited" = keep pending
-    await staleTab.waitForLoadState("networkidle");
+    await expect(staleTab).toHaveURL(/toast=moderation-stale/);
     const [row] = await query<{ status: string }>(`select status from submissions where id = 'sub-edit-stale'`);
     expect(row!.status, "saving a stale edit must not unpublish an approved sighting").toBe("approved");
   });
@@ -92,8 +87,6 @@ test.describe("simultaneous moderators", () => {
   });
 
   test("a rapid double-click on Approve records one decision", async ({ page, login }) => {
-    // Known bug: reviewSubmission has no state check, so a double-click on Approve records two decisions.
-    test.fail(true, "a double-click on Approve records two decisions");
     await seedSubmission({ id: "sub-dbl", movieTitle: "Ratatouille", imdbId: MOVIES.ratatouille.imdbId, title: "Double clicked" });
     await login();
     const approve = card(page, "Double clicked").getByRole("button", { name: "Approve" });

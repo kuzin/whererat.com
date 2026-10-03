@@ -5,7 +5,7 @@ import {
   SEEDED_MODERATOR_AVATAR_URL,
   type ModeratorAccount,
 } from "@/lib/auth";
-import { getDbPool } from "@/lib/db";
+import { getDbPool, withTransaction } from "@/lib/db";
 import {
   hashPassword,
   MAX_PASSWORD_LENGTH,
@@ -257,7 +257,7 @@ export async function createStoredModerator({
   }
 }
 
-export type UpdateUserError = "email_taken" | "unknown";
+export type UpdateUserError = "email_taken" | "last_owner" | "unknown";
 
 export async function updateUserByOwner({
   userId,
@@ -275,55 +275,26 @@ export async function updateUserByOwner({
   newPassword?: string;
 }): Promise<{ success: true } | { success: false; error: UpdateUserError }> {
   await ensureSeedAccounts();
-  const pool = getDbPool();
   try {
     const passwordHash = newPassword ? await hashPassword(newPassword) : undefined;
-    if (passwordHash && avatarUrl) {
-      await pool.query(
-        `update accounts
-            set display_name = $2,
-                email = $3,
-                role = $4,
-                avatar_url = $5,
-                password_hash = $6,
-                updated_at = now()
-          where id = $1`,
-        [userId, name, email, role, avatarUrl, passwordHash],
-      );
-    } else if (passwordHash) {
-      await pool.query(
-        `update accounts
-            set display_name = $2,
-                email = $3,
-                role = $4,
-                password_hash = $5,
-                updated_at = now()
-          where id = $1`,
-        [userId, name, email, role, passwordHash],
-      );
-    } else if (avatarUrl) {
-      await pool.query(
-        `update accounts
-            set display_name = $2,
-                email = $3,
-                role = $4,
-                avatar_url = $5,
-                updated_at = now()
-          where id = $1`,
-        [userId, name, email, role, avatarUrl],
-      );
-    } else {
-      await pool.query(
-        `update accounts
-            set display_name = $2,
-                email = $3,
-                role = $4,
-                updated_at = now()
-          where id = $1`,
-        [userId, name, email, role],
-      );
-    }
-    return { success: true };
+    return await withTransaction(async (client) => {
+      if (role !== "owner" && (await isLastOwner(client, userId))) {
+        return { success: false as const, error: "last_owner" as const };
+      }
+      // Build one UPDATE from the fields that were actually supplied.
+      const sets = ["display_name = $2", "email = $3", "role = $4"];
+      const params: unknown[] = [userId, name, email, role];
+      if (avatarUrl) {
+        params.push(avatarUrl);
+        sets.push(`avatar_url = $${params.length}`);
+      }
+      if (passwordHash) {
+        params.push(passwordHash);
+        sets.push(`password_hash = $${params.length}`);
+      }
+      await client.query(`update accounts set ${sets.join(", ")}, updated_at = now() where id = $1`, params);
+      return { success: true as const };
+    });
   } catch (err: unknown) {
     const constraint =
       err && typeof err === "object" && "constraint" in err
@@ -334,8 +305,29 @@ export async function updateUserByOwner({
   }
 }
 
-export async function deleteUserById(userId: string): Promise<void> {
+/**
+ * True when `userId` is currently an owner and no other owner exists. Locks the owner rows
+ * for the rest of the transaction, so two owners demoting/deleting each other at the same
+ * moment can't both pass the check and leave the system with nobody able to manage it.
+ */
+async function isLastOwner(client: { query: (sql: string) => Promise<{ rows: Array<{ id: string }> }> }, userId: string) {
+  const owners = await client.query(`select id from accounts where role = 'owner' for update`);
+  return owners.rows.length === 1 && owners.rows[0]!.id === userId;
+}
+
+export type DeleteUserError = "last_owner" | "unknown";
+
+export async function deleteUserById(
+  userId: string,
+): Promise<{ success: true } | { success: false; error: DeleteUserError }> {
   await ensureSeedAccounts();
-  const pool = getDbPool();
-  await pool.query(`delete from accounts where id = $1`, [userId]);
+  try {
+    return await withTransaction(async (client) => {
+      if (await isLastOwner(client, userId)) return { success: false as const, error: "last_owner" as const };
+      await client.query(`delete from accounts where id = $1`, [userId]);
+      return { success: true as const };
+    });
+  } catch {
+    return { success: false, error: "unknown" };
+  }
 }

@@ -117,7 +117,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   h.session = MOD;
   h.cookieValue = "signed-cookie";
-  mockReview.mockResolvedValue(undefined);
+  mockReview.mockResolvedValue({ applied: true });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -471,5 +471,48 @@ describe("returnTo: redirects stay on this site", () => {
     await run(rereviewSubmission, form({ submissionId: "sub-1" }));
     expect(reviewArg()).toMatchObject({ decision: "edited", submissionId: "sub-1" });
     expect(reviewArg().edits).toBeUndefined();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+describe("stale decisions (another tab, another moderator, a double click)", () => {
+  const reviewArgs = () => mockReview.mock.calls.at(-1)![0] as { expectedStatus?: unknown };
+
+  it.each(["approved", "rejected", "edited", "edited and approved"])(
+    "%s acts only on a PENDING submission",
+    async (decision) => {
+      await run(moderateSubmission, form({ submissionId: "sub-1", decision }));
+      expect(reviewArgs().expectedStatus).toBe("pending");
+    },
+  );
+
+  it.each(["approved", "rejected", "edited", "edited and approved"])(
+    "a stale %s redirects with the 'already handled' toast, not a success toast",
+    async (decision) => {
+      mockReview.mockResolvedValue({ applied: false, reason: "stale", currentStatus: "approved" });
+      const r = await run(moderateSubmission, form({ submissionId: "sub-1", decision }));
+      expect(r.redirect).toBe("/moderation?toast=moderation-stale");
+    },
+  );
+
+  it("an applied decision still shows its normal toast", async () => {
+    mockReview.mockResolvedValue({ applied: true });
+    expect((await run(moderateSubmission, form({ submissionId: "sub-1", decision: "approved" }))).redirect).toBe("/moderation?toast=moderation-approved");
+    expect((await run(moderateSubmission, form({ submissionId: "sub-1", decision: "rejected" }))).redirect).toBe("/moderation?toast=moderation-rejected");
+  });
+
+  it("re-review only works on something already decided, and a stale click is reported", async () => {
+    await run(rereviewSubmission, form({ submissionId: "sub-1" }));
+    expect(reviewArgs().expectedStatus).toEqual(["approved", "rejected"]);
+
+    mockReview.mockResolvedValue({ applied: false, reason: "stale", currentStatus: "pending" });
+    const r = await run(rereviewSubmission, form({ submissionId: "sub-1" }));
+    expect(r.redirect).toBe("/moderation?toast=moderation-stale");
+  });
+
+  it("re-review reports success when applied", async () => {
+    mockReview.mockResolvedValue({ applied: true });
+    const r = await run(rereviewSubmission, form({ submissionId: "sub-1" }));
+    expect(r.redirect).toBe("/moderation?toast=moderation-requeued");
   });
 });
