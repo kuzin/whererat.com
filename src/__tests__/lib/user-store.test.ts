@@ -11,7 +11,12 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 vi.setConfig({ testTimeout: 30_000 });
 
 const holder = vi.hoisted(() => ({ pool: undefined as unknown }));
-vi.mock("@/lib/db", () => ({ getDbPool: () => holder.pool }));
+vi.mock("@/lib/db", () => ({
+  getDbPool: () => holder.pool,
+  // The fake pool has no real transactions; the callback just runs against it.
+  withTransaction: async (fn: (client: unknown) => Promise<unknown>) =>
+    fn({ query: (sql: string, params?: unknown[]) => (holder.pool as { query: (...a: unknown[]) => unknown }).query(sql, params) }),
+}));
 
 import {
   authenticateStoredModerator,
@@ -59,6 +64,9 @@ function makePool(initial: Row[] = []) {
     }
     if (s.startsWith("select") && s.includes("from accounts where username = $1")) {
       return { rows: rows.filter((r) => r.username === params[0]).map((r) => pub(r, s.includes("password_hash"))) };
+    }
+    if (s.startsWith("select id from accounts where role = 'owner' for update")) {
+      return { rows: rows.filter((r) => r.role === "owner").map((r) => ({ id: r.id })) };
     }
     if (s.startsWith("select password_hash from accounts where id = $1")) {
       return { rows: rows.filter((r) => r.id === params[0]).map((r) => ({ password_hash: r.password_hash })) };
@@ -316,7 +324,59 @@ describe("nothing exposes password material", () => {
   });
 
   it("getAccountForSession returns undefined for a deleted account", async () => {
+    use([legacyAdmin(), legacyAdmin({ id: "o2", username: "o2", email: "o2@x.io" })]); // a 2nd owner so deleting is allowed
     await deleteUserById("admin");
     expect(await getAccountForSession("admin")).toBeUndefined();
+  });
+});
+
+describe("the last owner can't be removed or demoted", () => {
+  const owner = (id: string, username: string, email: string) => legacyAdmin({ id, username, email, role: "owner" });
+  const mod = legacyAdmin({ id: "m1", username: "mod", email: "mod@x.io", role: "moderator" });
+  const base = (id: string, role: "owner" | "moderator") => ({ userId: id, name: "N", email: `${id}@x.io`, role });
+
+  it("demoting the only owner is refused and the role is unchanged", async () => {
+    use([legacyAdmin(), mod]);
+    expect(await updateUserByOwner(base("admin", "moderator"))).toEqual({ success: false, error: "last_owner" });
+    expect(pool.rows.find((r) => r.id === "admin")!.role).toBe("owner");
+  });
+
+  it("deleting the only owner is refused and the account remains", async () => {
+    use([legacyAdmin(), mod]);
+    expect(await deleteUserById("admin")).toEqual({ success: false, error: "last_owner" });
+    expect(pool.rows.some((r) => r.id === "admin")).toBe(true);
+  });
+
+  it("with two owners, one can be demoted and then deleted... but never the last", async () => {
+    use([owner("o1", "o1", "o1@x.io"), owner("o2", "o2", "o2@x.io")]);
+    expect(await updateUserByOwner(base("o1", "moderator"))).toEqual({ success: true });
+    expect(await updateUserByOwner(base("o2", "moderator"))).toEqual({ success: false, error: "last_owner" });
+    expect(await deleteUserById("o2")).toEqual({ success: false, error: "last_owner" });
+    expect(pool.rows.filter((r) => r.role === "owner")).toHaveLength(1);
+  });
+
+  it("deleting a moderator or an extra owner is fine", async () => {
+    use([owner("o1", "o1", "o1@x.io"), owner("o2", "o2", "o2@x.io"), mod]);
+    expect(await deleteUserById("m1")).toEqual({ success: true });
+    expect(await deleteUserById("o2")).toEqual({ success: true });
+    expect(pool.rows.map((r) => r.id)).toEqual(["o1"]);
+  });
+
+  it("changing a moderator's role to owner, or an owner staying an owner, is unaffected", async () => {
+    use([legacyAdmin(), mod]);
+    expect(await updateUserByOwner(base("m1", "owner"))).toEqual({ success: true });
+    expect(await updateUserByOwner(base("admin", "owner"))).toEqual({ success: true });
+    expect(pool.rows.filter((r) => r.role === "owner")).toHaveLength(2);
+  });
+
+  it("promoting someone else then demoting yourself works (the supported way to hand over)", async () => {
+    use([legacyAdmin(), mod]);
+    await updateUserByOwner(base("m1", "owner"));
+    expect(await updateUserByOwner(base("admin", "moderator"))).toEqual({ success: true });
+  });
+
+  it("deleting an unknown id is a harmless success when another owner exists", async () => {
+    use([legacyAdmin()]);
+    expect(await deleteUserById("ghost")).toEqual({ success: true });
   });
 });

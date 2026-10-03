@@ -148,8 +148,11 @@ function makePool(opts: { sub?: Partial<DbSub>; images?: Img[]; fail?: FailHook 
   });
   // Pooled client with real BEGIN/COMMIT/ROLLBACK semantics: ROLLBACK restores
   // everything the transaction wrote.
+  // `select ... for update` takes a row lock held until COMMIT/ROLLBACK, like Postgres.
+  let lockTail: Promise<void> = Promise.resolve();
   const connect = vi.fn(async () => {
     let snapshot: string | undefined;
+    let releaseLock: (() => void) | undefined;
     return {
       query: vi.fn(async (sql: string, params: unknown[] = []) => {
         const s = sql.replace(/\s+/g, " ").trim().toLowerCase();
@@ -165,9 +168,11 @@ function makePool(opts: { sub?: Partial<DbSub>; images?: Img[]; fail?: FailHook 
         if (s === "commit") {
           state.calls.push({ sql, params });
           snapshot = undefined;
+          releaseLock?.();
           return { rows: [] };
         }
         if (s === "rollback") {
+          releaseLock?.();
           state.calls.push({ sql, params });
           if (snapshot) {
             const restored = JSON.parse(snapshot);
@@ -177,9 +182,18 @@ function makePool(opts: { sub?: Partial<DbSub>; images?: Img[]; fail?: FailHook 
           }
           return { rows: [] };
         }
+        if (s.startsWith("select status from submissions where id = $1 for update")) {
+          state.calls.push({ sql, params });
+          const previous = lockTail;
+          let release!: () => void;
+          lockTail = new Promise<void>((resolve) => (release = resolve));
+          releaseLock = release;
+          await previous; // wait for any transaction already holding the row
+          return { rows: state.submission.id === params[0] ? [{ status: state.submission.status }] : [] };
+        }
         return query(sql, params);
       }),
-      release: vi.fn(),
+      release: vi.fn(() => releaseLock?.()),
     };
   });
   return Object.assign(state, { query, connect });
@@ -294,7 +308,7 @@ describe("reviewSubmission: unknown submission id", () => {
     async (decision) => {
       mockFind.mockResolvedValue(undefined);
       const result = await reviewSubmission({ submissionId: "does-not-exist", decision, moderator });
-      expect(result).toBeUndefined();
+      expect(result).toEqual({ applied: false, reason: "not-found" });
       expect(pool.updates).toHaveLength(0);
       expect(pool.reviewActions).toHaveLength(0);
       expect(mockEnsure).not.toHaveBeenCalled();
@@ -452,7 +466,7 @@ describe("reviewSubmission: submitter notification", () => {
 
   it("a rejected e-mail promise never fails the review", async () => {
     mockNotify.mockRejectedValueOnce(new Error("smtp down"));
-    await expect(reviewSubmission({ submissionId: "sub-1", decision: "approved", moderator })).resolves.toBeUndefined();
+    await expect(reviewSubmission({ submissionId: "sub-1", decision: "approved", moderator })).resolves.toEqual({ applied: true });
   });
 
   it("no e-mail is sent if a DB write failed", async () => {
@@ -670,5 +684,85 @@ describe("reviewSubmission: catalog cache", () => {
       spoiler: false, approximateRatCount: 1, submittedBy: "Alice",
     } as never);
     expect(invalidate).not.toHaveBeenCalled();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+describe("reviewSubmission: expectedStatus (stale tabs, double clicks, simultaneous moderators)", () => {
+  const writes = () => pool.calls.filter((c) => /^(update submissions|insert into review_actions|delete from submission_images)/i.test(c.sql.trim()));
+
+  it("applies when the submission is still in the expected status", async () => {
+    const r = await reviewSubmission({ submissionId: "sub-1", decision: "approved", moderator, expectedStatus: "pending" });
+    expect(r).toEqual({ applied: true });
+    expect(pool.submission.status).toBe("approved");
+    expect(pool.reviewActions).toHaveLength(1);
+  });
+
+  it.each([
+    ["approved", "approved"],
+    ["rejected", "approved"],
+    ["edited", "approved"],
+    ["edited and approved", "approved"],
+    ["approved", "rejected"],
+  ] as const)("a stale %s on an item that is already %s changes nothing", async (decision, current) => {
+    use({ sub: { status: current } });
+    const r = await reviewSubmission({ submissionId: "sub-1", decision, moderator, expectedStatus: "pending" });
+    expect(r).toEqual({ applied: false, reason: "stale", currentStatus: current });
+    expect(pool.submission.status).toBe(current);
+    expect(writes()).toHaveLength(0);
+    expect(pool.reviewActions).toHaveLength(0);
+    expect(mockNotify).not.toHaveBeenCalled();
+    expect(mockEnsure).not.toHaveBeenCalled();
+  });
+
+  it("a stale decision never creates a catalog movie", async () => {
+    use({ sub: { status: "approved" } });
+    mockFind.mockResolvedValue(undefined);
+    await reviewSubmission({ submissionId: "sub-1", decision: "approved", moderator, expectedStatus: "pending" });
+    expect(mockEnsure).not.toHaveBeenCalled();
+  });
+
+  it("accepts a list of allowed statuses (re-review works from approved OR rejected)", async () => {
+    for (const current of ["approved", "rejected"] as const) {
+      use({ sub: { status: current } });
+      const r = await reviewSubmission({ submissionId: "sub-1", decision: "edited", moderator, expectedStatus: ["approved", "rejected"] });
+      expect(r).toEqual({ applied: true });
+      expect(pool.submission.status).toBe("pending");
+    }
+    use({ sub: { status: "pending" } });
+    expect(await reviewSubmission({ submissionId: "sub-1", decision: "edited", moderator, expectedStatus: ["approved", "rejected"] })).toMatchObject({ applied: false, reason: "stale" });
+  });
+
+  it("without expectedStatus the old unguarded behaviour is unchanged", async () => {
+    use({ sub: { status: "approved" } });
+    expect(await reviewSubmission({ submissionId: "sub-1", decision: "rejected", moderator })).toEqual({ applied: true });
+    expect(pool.submission.status).toBe("rejected");
+  });
+
+  it("two simultaneous approvals: exactly one wins, one audit row, one e-mail", async () => {
+    const results = await Promise.all([
+      reviewSubmission({ submissionId: "sub-1", decision: "approved", moderator, expectedStatus: "pending" }),
+      reviewSubmission({ submissionId: "sub-1", decision: "approved", moderator, expectedStatus: "pending" }),
+    ]);
+    expect(results.filter((r) => r.applied)).toHaveLength(1);
+    expect(results.find((r) => !r.applied)).toMatchObject({ reason: "stale", currentStatus: "approved" });
+    expect(pool.reviewActions).toHaveLength(1);
+    expect(mockNotify).toHaveBeenCalledTimes(1);
+  });
+
+  it("simultaneous approve and deny: the loser can't overwrite the winner", async () => {
+    await Promise.all([
+      reviewSubmission({ submissionId: "sub-1", decision: "approved", moderator, expectedStatus: "pending" }),
+      reviewSubmission({ submissionId: "sub-1", decision: "rejected", moderator, expectedStatus: "pending" }),
+    ]);
+    expect(pool.reviewActions).toHaveLength(1);
+    expect(pool.submission.status).toBe(pool.reviewActions[0]!.action === "approved" ? "approved" : "rejected");
+  });
+
+  it("the lock is released after a stale result so later decisions are not blocked", async () => {
+    use({ sub: { status: "approved" } });
+    await reviewSubmission({ submissionId: "sub-1", decision: "approved", moderator, expectedStatus: "pending" });
+    const r = await reviewSubmission({ submissionId: "sub-1", decision: "edited", moderator, expectedStatus: "approved" });
+    expect(r).toEqual({ applied: true });
   });
 });

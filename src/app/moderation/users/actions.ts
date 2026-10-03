@@ -89,7 +89,7 @@ export async function updateUserAction(formData: FormData) {
     });
 
     if (!result.success) {
-        redirect(`/moderation/users?edit=${userId}&error=${result.error}`);
+        redirect(`/moderation/users?edit=${encodeURIComponent(userId)}&error=${result.error}`);
     }
 
     revalidatePath("/moderation/users");
@@ -97,11 +97,14 @@ export async function updateUserAction(formData: FormData) {
 }
 
 export async function deleteUserAction(formData: FormData) {
-    await requireOwner();
+    const session = await requireOwner();
     const userId = (formData.get("userId") as string | null)?.trim() ?? "";
     if (!userId) redirect("/moderation/users");
+    // The UI hides the button on your own row; enforce it on the server too.
+    if (userId === session.id) redirect("/moderation/users?error=self_delete");
 
-    await deleteUserById(userId);
+    const result = await deleteUserById(userId);
+    if (!result.success) redirect(`/moderation/users?error=${result.error}`);
     revalidatePath("/moderation/users");
     redirect("/moderation/users?toast=user-deleted");
 }

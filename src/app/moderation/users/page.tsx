@@ -78,8 +78,15 @@ const ERROR_MESSAGES: Record<string, string> = {
     username_taken: "That username is already taken.",
     email_taken: "That email address is already in use.",
     weak_password: "Password must be at least 6 characters.",
+    last_owner: "There must always be at least one owner. Make someone else an owner first.",
+    self_delete: "You can't delete your own account.",
     unknown: "Something went wrong. Please try again.",
 };
+
+/** Own-property lookup: a URL value like `__proto__` must not resolve to Object.prototype. */
+function errorMessage(code: string): string {
+    return Object.hasOwn(ERROR_MESSAGES, code) ? ERROR_MESSAGES[code]! : "Something went wrong.";
+}
 
 function RoleBadge({ role }: { role: StoredAccount["role"] }) {
     return (
@@ -266,7 +273,7 @@ export default async function ManageUsersPage({
                     <form id="user-create-form" action={createUserAction} className="py-5 grid gap-4">
                         {errorCode && (
                             <p className="rounded-lg bg-red-50 px-3 py-2 text-sm font-semibold text-red-800 dark:bg-red-950/40 dark:text-red-300">
-                                {ERROR_MESSAGES[errorCode] ?? "Something went wrong."}
+                                {errorMessage(errorCode)}
                             </p>
                         )}
                         <UserCreateFields />
@@ -293,7 +300,7 @@ export default async function ManageUsersPage({
                     <form id="user-edit-form" action={updateUserAction} className="py-5 grid gap-4">
                         {errorCode && (
                             <p className="rounded-lg bg-red-50 px-3 py-2 text-sm font-semibold text-red-800 dark:bg-red-950/40 dark:text-red-300">
-                                {ERROR_MESSAGES[errorCode] ?? "Something went wrong."}
+                                {errorMessage(errorCode)}
                             </p>
                         )}
                         <UserEditFields account={editingAccount} />
