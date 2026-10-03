@@ -17,13 +17,14 @@ import {
 } from "@/lib/sighting-images-view";
 
 /**
- * Saves the image carousel of one live sighting from /moderation/images. Only the
- * images change: no review action is logged and the submitter is not e-mailed.
+ * Saves the image carousel of one live sighting from /moderation/images (owner only).
+ * Only the images change: no review action is logged and the submitter is not e-mailed.
  */
 export async function saveSightingImages(formData: FormData) {
   const cookieStore = await cookies();
   const session = await verifyModeratorSession(cookieStore.get(MODERATOR_SESSION_COOKIE)?.value);
   if (!session) redirect("/login?next=/moderation/images");
+  if (session.role !== "owner") redirect("/moderation");
 
   // The list the moderator came from, rebuilt from its parts so no free-form URL is followed.
   const list = {

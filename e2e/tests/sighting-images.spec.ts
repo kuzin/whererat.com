@@ -125,9 +125,13 @@ test.describe("sighting images", () => {
     expect(await imagesOf("sub-forge")).toEqual([]);
   });
 
-  test("the entry point is an owner control", async ({ page, login }) => {
+  test("only the owner gets it: a moderator sees no button and is sent back from the page", async ({ page, login }) => {
+    await seedApproved("sub-mod", "Moderator cannot edit", "10%");
     await login(MODERATOR);
     await expect(page.getByRole("link", { name: /^Sighting images/ })).toHaveCount(0);
+    await page.goto("/moderation/images?edit=queue-sub-mod");
+    await expect(page).toHaveURL(/\/moderation$/);
+    await expect(page.getByRole("heading", { name: /^Images:/ })).toHaveCount(0);
   });
 
   test("signed-out visitors are sent to log in", async ({ page }) => {

@@ -91,7 +91,7 @@ const NEW_IMAGES = [{ url: "/uploads/sightings/new.jpg", alt: "new" }];
 
 beforeEach(() => {
   vi.clearAllMocks();
-  h.session = { id: "acct-mod", name: "Mod", role: "moderator" };
+  h.session = { id: "acct-admin", name: "Admin", role: "owner" };
   mockAll.mockResolvedValue([
     { sighting: sighting("queue-sub-1", { images: [{ url: "/uploads/sightings/old.jpg" }] }), movie: RAT },
     { sighting: sighting("queue-sub-2"), movie: RAT },
@@ -109,7 +109,15 @@ describe("saveSightingImages", () => {
     expect(mockReplace).not.toHaveBeenCalled();
   });
 
-  it("any moderator (not just the owner) can save; images replace the sighting's set", async () => {
+  it("a moderator who is not the owner is turned away before anything is read or written", async () => {
+    h.session = { id: "acct-mod", name: "Mod", role: "moderator" };
+    expect(await run({ sightingId: "queue-sub-1" })).toBe("/moderation");
+    expect(mockAll).not.toHaveBeenCalled();
+    expect(mockGallery).not.toHaveBeenCalled();
+    expect(mockReplace).not.toHaveBeenCalled();
+  });
+
+  it("the owner's upload replaces the sighting's images", async () => {
     const url = await run({ sightingId: "queue-sub-2", filter: "without", q: "rat", page: "2" });
     expect(mockReplace).toHaveBeenCalledWith("queue-sub-2", NEW_IMAGES);
     expect(url).toBe("/moderation/images?filter=without&q=rat&page=2&toast=sighting-images-saved");

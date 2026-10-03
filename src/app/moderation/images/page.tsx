@@ -71,6 +71,7 @@ export default async function SightingImagesPage({
   const cookieStore = await cookies();
   const session = await verifyModeratorSession(cookieStore.get(MODERATOR_SESSION_COOKIE)?.value);
   if (!session) redirect("/login?next=/moderation/images");
+  if (session.role !== "owner") redirect("/moderation");
 
   const params = searchParams ? await searchParams : {};
   const list: SightingImagesListState = {
