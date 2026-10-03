@@ -11,6 +11,7 @@
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "db:schema:apply": "tsx scripts/db-apply-schema.ts",
+    "passwords:hash": "tsx scripts/hash-existing-passwords.ts",
     "imdb:resync": "tsx scripts/imdb-resync-all.ts",
     "store:play:graphics": "tsx scripts/generate-play-store-graphics.ts",
     "store:play:backdrop": "tsx scripts/play-phone-backdrop.ts",

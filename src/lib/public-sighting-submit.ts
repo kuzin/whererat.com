@@ -22,6 +22,7 @@ import {
 import { notifyOwnerOfNewSubmission } from "@/lib/moderation-notify";
 import { notifySubmitterOfReceipt } from "@/lib/submitter-notify";
 import { consumeSharedRateLimit } from "@/lib/rate-limit-store";
+import { canonicalizeClientIp } from "@/lib/rate-limit";
 import {
   SUBMISSION_LIMITS,
   cleanContentWarnings,
@@ -75,29 +76,6 @@ function fireAndForget(task: () => unknown): void {
       console.error("[public-sighting-submit] background task failed:", e);
     }
   })();
-}
-
-/**
- * One client, one bucket: lowercase, collapse IPv6 spellings ("::1" vs
- * "0:0:0:0:0:0:0:1") and unwrap IPv4-mapped addresses ("::ffff:1.2.3.4").
- */
-function canonicalizeClientIp(raw: string): string {
-  const trimmed = raw.trim().toLowerCase();
-  if (!trimmed) return "unknown";
-  if (!trimmed.includes(":")) return trimmed;
-  try {
-    const host = new URL(`http://[${trimmed}]`).hostname.slice(1, -1);
-    const mapped = host.match(/^::ffff:(?:(\d+\.\d+\.\d+\.\d+)|([0-9a-f]{1,4}):([0-9a-f]{1,4}))$/);
-    if (mapped?.[1]) return mapped[1];
-    if (mapped?.[2] && mapped[3]) {
-      const hi = Number.parseInt(mapped[2], 16);
-      const lo = Number.parseInt(mapped[3], 16);
-      return `${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`;
-    }
-    return host;
-  } catch {
-    return trimmed;
-  }
 }
 
 /** @returns true if this IP should be blocked (already at limit before increment semantics). */

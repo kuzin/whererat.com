@@ -1,5 +1,6 @@
 "use server";
 
+import { MAX_PASSWORD_LENGTH } from "@/lib/password-hash";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
@@ -310,7 +311,7 @@ export async function createModerator(formData: FormData) {
     redirect("/moderation?addUser=missing");
   }
 
-  if (password.length < 6) {
+  if (password.length < 6 || password.length > MAX_PASSWORD_LENGTH) {
     redirect("/moderation?addUser=weak_password");
   }
 
@@ -349,7 +350,7 @@ export async function updateUserAsOwner(formData: FormData) {
     redirect("/moderation?editUser=missing");
   }
 
-  if (newPassword && newPassword.length < 6) {
+  if (newPassword && (newPassword.length < 6 || newPassword.length > MAX_PASSWORD_LENGTH)) {
     redirect("/moderation?editUser=weak_password");
   }
 

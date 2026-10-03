@@ -3,7 +3,8 @@ import Link from "next/link";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import type { Metadata } from "next";
-import { MODERATOR_SESSION_COOKIE, type ModeratorAccount } from "@/lib/auth";
+import { MODERATOR_SESSION_COOKIE } from "@/lib/auth";
+import type { StoredAccount } from "@/lib/user-store";
 import { verifyModeratorSession } from "@/lib/moderator-session";
 import { readUserStore } from "@/lib/user-store";
 import { ModalShell } from "@/components/ui/modal-shell";
@@ -46,7 +47,7 @@ const PlusIcon = (
     </svg>
 );
 
-function buildUserRowActions(account: ModeratorAccount, canDelete: boolean): Action[] {
+function buildUserRowActions(account: StoredAccount, canDelete: boolean): Action[] {
     const actions: Action[] = [
         {
             kind: "link",
@@ -80,7 +81,7 @@ const ERROR_MESSAGES: Record<string, string> = {
     unknown: "Something went wrong. Please try again.",
 };
 
-function RoleBadge({ role }: { role: ModeratorAccount["role"] }) {
+function RoleBadge({ role }: { role: StoredAccount["role"] }) {
     return (
         <span
             className={`inline-flex rounded-md border px-2 py-0.5 text-xs font-bold uppercase tracking-[0.12em] ${role === "owner"
@@ -126,7 +127,7 @@ function UserCreateFields() {
     );
 }
 
-function UserEditFields({ account }: { account: ModeratorAccount }) {
+function UserEditFields({ account }: { account: StoredAccount }) {
     return (
         <div className="grid gap-4 sm:grid-cols-2">
             <input type="hidden" name="userId" value={account.id} />
