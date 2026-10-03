@@ -1,5 +1,6 @@
 import type { Movie } from "@/lib/whererat";
 import { getDbPool } from "@/lib/db";
+import { invalidateCatalogCache } from "@/lib/catalog-cache";
 
 export async function getMovieOverride(movieId: string) {
   const pool = getDbPool();
@@ -63,6 +64,7 @@ export async function updateMovieOverride(movieId: string, override: Partial<Mov
       override.metadata ?? null,
     ],
   );
+  invalidateCatalogCache();
 }
 
 export async function clearMovieOverride(movieId: string) {
@@ -85,4 +87,5 @@ export async function deleteMovieById(movieId: string) {
     `update movies set is_deleted = true, updated_at = now() where id = $1`,
     [movieId],
   );
+  invalidateCatalogCache();
 }

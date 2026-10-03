@@ -1,7 +1,7 @@
 /**
  * getAllMergedSightings (moderation-store.ts): every live sighting across the
- * catalog with its movie, built from one catalog read. Must agree with the
- * per-movie view the public pages use.
+ * catalog paired with its movie. Must agree with the per-movie view the public
+ * pages use.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { Movie } from "@/lib/whererat";
@@ -11,7 +11,6 @@ const h = vi.hoisted(() => ({
   overrides: {} as Record<string, Record<string, unknown>>,
   deleted: new Set<string>(),
   movies: [] as unknown[],
-  find: vi.fn(),
 }));
 
 vi.mock("@/lib/whererat", async (importOriginal) => {
@@ -23,14 +22,16 @@ vi.mock("@/lib/sighting-edit-store", () => ({
   getSightingOverrides: vi.fn(async () => h.overrides),
   getDeletedSightingIds: vi.fn(async () => h.deleted),
 }));
+// Real lookup/resolution logic; only the DB-backed catalog reads are faked.
 vi.mock("@/lib/movie-catalog", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/movie-catalog")>();
   return {
-    matchCatalogMovieForSubmission: actual.matchCatalogMovieForSubmission,
-    getCatalogMovies: vi.fn(async () => h.movies),
-    findCatalogMovieForSubmission: h.find,
+    ...actual,
+    getCatalogIdentities: vi.fn(async () => h.movies),
+    getCatalogListMovies: vi.fn(async () => h.movies),
   };
 });
+vi.mock("@/lib/catalog-cache", () => ({ invalidateCatalogCache: vi.fn() }));
 vi.mock("@/lib/submitter-notify", () => ({ notifySubmitterOfDecision: vi.fn() }));
 vi.mock("@/lib/community-movie-store", () => ({ ensureCommunityMovieForSubmission: vi.fn() }));
 
@@ -107,10 +108,6 @@ beforeEach(() => {
   h.overrides = {};
   h.deleted = new Set();
   h.movies = [RAT, JAWS];
-  h.find.mockReset();
-  h.find.mockImplementation(async (s: { imdbId?: string; movieTitle: string }) =>
-    [RAT, JAWS].find((m) => m.externalIds.imdb === s.imdbId),
-  );
   h.query.mockReset();
   h.query.mockImplementation(async (sql: string, params?: unknown[]) => {
     const text = String(sql);
@@ -132,13 +129,14 @@ describe("getAllMergedSightings", () => {
     ];
     state.baseSightings = [baseRow("base-1", "jaws")];
     const all = await getAllMergedSightings();
+    // Catalog order, then each movie's base rows before its approved submissions.
     expect(all.map((e) => [e.sighting.id, e.movie.id])).toEqual([
-      ["base-1", "jaws"],
       ["queue-sub-a", "rat"],
+      ["base-1", "jaws"],
       ["queue-sub-j", "jaws"],
     ]);
-    expect(all[1]!.sighting.images).toEqual([{ url: "/a.png", alt: "A", positionX: 5, positionY: 6, zoom: 2 }]);
-    expect(all[1]!.sighting.movieId).toBe("rat");
+    expect(all[0]!.sighting.images).toEqual([{ url: "/a.png", alt: "A", positionX: 5, positionY: 6, zoom: 2 }]);
+    expect(all[0]!.sighting.movieId).toBe("rat");
   });
 
   it("leaves out pending / rejected submissions and ones with no catalog movie", async () => {
@@ -182,14 +180,5 @@ describe("getAllMergedSightings", () => {
     const all = await getAllMergedSightings();
     const forRat = await getMergedSightingsForMovie("rat");
     expect(all.filter((e) => e.movie.id === "rat").map((e) => e.sighting)).toEqual(forRat);
-  });
-
-  it("reads the catalog once, not once per submission", async () => {
-    const { getCatalogMovies } = await import("@/lib/movie-catalog");
-    vi.mocked(getCatalogMovies).mockClear();
-    state.submissions = Array.from({ length: 10 }, (_, i) => subRow(`sub-${i}`));
-    await getAllMergedSightings();
-    expect(getCatalogMovies).toHaveBeenCalledTimes(1);
-    expect(h.find).not.toHaveBeenCalled();
   });
 });

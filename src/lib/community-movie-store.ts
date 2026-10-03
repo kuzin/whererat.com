@@ -1,5 +1,6 @@
 import { normalizeImdbId, type Movie, type Submission } from "@/lib/whererat";
 import { getDbPool } from "@/lib/db";
+import { invalidateCatalogCache } from "@/lib/catalog-cache";
 import { syncMovieFromImdb } from "@/lib/movie-imdb-sync";
 import { MAX_RELEASE_YEAR, MIN_RELEASE_YEAR, sanitizePosterUrl } from "@/lib/submission-input";
 
@@ -95,7 +96,10 @@ export async function ensureCommunityMovieForSubmission(
      returning ${MOVIE_COLUMNS}`,
     [imdbId],
   );
-  if (restored.rows[0]) return rowToMovie(restored.rows[0]);
+  if (restored.rows[0]) {
+    invalidateCatalogCache();
+    return rowToMovie(restored.rows[0]);
+  }
 
   const releaseYear = releaseYearOrCurrent(submission.movieYear);
   const slugBase = `${slugifyTitle(title) || imdbId}-${releaseYear}`;
@@ -156,10 +160,13 @@ export async function ensureCommunityMovieForSubmission(
         continue;
       }
       const newMovie = rowToMovie(inserted.rows[0]);
+      invalidateCatalogCache();
 
       // Fire-and-forget: enrich with OMDb metadata and IMDb rat facts.
-      // Errors are swallowed inside syncMovieFromImdb so approval is never blocked.
-      void syncMovieFromImdb(newMovie);
+      // Never blocks approval: a failed enrichment is logged and retried by the cron resync.
+      void Promise.resolve(syncMovieFromImdb(newMovie)).catch((error) => {
+        console.warn("[community-movie] IMDb enrichment failed:", error instanceof Error ? error.message : error);
+      });
 
       return newMovie;
     } catch (error) {

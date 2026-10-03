@@ -169,6 +169,12 @@ create table if not exists review_actions (
 create index if not exists review_actions_submission_reviewed_idx
   on review_actions(submission_id, reviewed_at desc);
 
+-- The public catalog reads only approved submissions, ordered by id
+-- (`where status = 'approved' order by id`). Partial, so it stays small as the
+-- pending/rejected backlog grows.
+create index if not exists submissions_approved_idx
+  on submissions(id) where status = 'approved';
+
 -- Content warnings on sightings and submissions
 alter table sightings add column if not exists content_warnings text[] not null default '{}';
 alter table submissions add column if not exists content_warnings text[] not null default '{}';

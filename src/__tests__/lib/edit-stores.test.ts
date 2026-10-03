@@ -5,7 +5,9 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const query = vi.fn();
+const invalidate = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/db", () => ({ getDbPool: () => ({ query }) }));
+vi.mock("@/lib/catalog-cache", () => ({ invalidateCatalogCache: invalidate }));
 
 import {
   getMovieOverride,
@@ -24,6 +26,7 @@ import {
 import type { Movie } from "@/lib/whererat";
 
 beforeEach(() => {
+  invalidate.mockReset();
   query.mockReset();
   query.mockResolvedValue({ rows: [], rowCount: 0 });
 });
@@ -280,5 +283,40 @@ describe("sighting-edit-store", () => {
     expect(sqls[1]).toMatch(/update sightings set is_deleted = true/);
     expect(sqls.some((s) => /delete from sightings\b/.test(s))).toBe(false);
     expect(query.mock.calls[1]![1]).toEqual(["s1"]);
+  });
+});
+
+describe("catalog cache invalidation", () => {
+  it("updating a movie override expires the cache after the movie row is rewritten", async () => {
+    await updateMovieOverride("m1", { title: "New" });
+    expect(invalidate).toHaveBeenCalledTimes(1);
+    // ...and only after both statements ran, so the next read sees the new row.
+    expect(invalidate.mock.invocationCallOrder[0]!).toBeGreaterThan(query.mock.invocationCallOrder.at(-1)!);
+  });
+
+  it("deleting a movie expires the cache", async () => {
+    await deleteMovieById("m1");
+    expect(invalidate).toHaveBeenCalledTimes(1);
+  });
+
+  it("updating or deleting a sighting expires the cache", async () => {
+    await updateSightingOverride("s1", { description: "x" });
+    await deleteSightingById("s1");
+    expect(invalidate).toHaveBeenCalledTimes(2);
+  });
+
+  it("reads and override clearing leave the cache alone (the movies row is unchanged)", async () => {
+    await getMovieOverride("m1");
+    await getDeletedMovieIds();
+    await clearMovieOverride("m1");
+    await getSightingOverrides();
+    await getDeletedSightingIds();
+    expect(invalidate).not.toHaveBeenCalled();
+  });
+
+  it("a failed write does not expire it", async () => {
+    query.mockRejectedValueOnce(new Error("db down"));
+    await expect(deleteMovieById("m1")).rejects.toThrow("db down");
+    expect(invalidate).not.toHaveBeenCalled();
   });
 });

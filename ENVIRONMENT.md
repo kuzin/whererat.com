@@ -31,6 +31,8 @@ This will include `VERCEL_OIDC_TOKEN` noise from Vercel — you can delete that 
 | `BLOB_READ_WRITE_TOKEN` | Production, Preview | For uploads | Vercel Blob token. Without it, images write to local disk and are lost on deploy. |
 | `RESEND_API_KEY` | Production, Preview | Optional | When set, emails the owner account on each new public submission. |
 | `MODERATION_NOTIFY_FROM` | Production, Preview | Optional | Override the From address used for moderation emails. Default `WhereRat <no-reply@whererat.com>` — requires a verified sender domain in Resend. |
+| `WHERERAT_CATALOG_CACHE_SECONDS` | Optional | Optional | Seconds the home page / `/api/v1/catalog` data stays cached (default `300`). Moderation actions expire it immediately; this TTL only covers writes made outside the app (scripts, manual SQL). `0` disables the cache. |
+| `PG_POOL_MAX` | Optional | Optional | Max Postgres connections per server instance (default `10`). Lower it if the database connection limit is tight. |
 
 ## Adding a new variable
 
@@ -72,3 +74,9 @@ The app uses a single Neon database for all environments (local dev, Preview, Pr
 2. `POSTGRES_URL`
 3. `POSTGRES_PRISMA_URL`
 4. `DATABASE_URL_UNPOOLED`
+
+Use Neon's **pooled** connection string (the host contains `-pooler`) for `DATABASE_URL` on Vercel. Each function instance keeps its own `pg` pool, and the pooler keeps many instances from exhausting Postgres connections. Keep the unpooled string for `DATABASE_URL_UNPOOLED` / one-off scripts.
+
+## Catalog cache
+
+The home page and `/api/v1/catalog` read through Next's data cache (`src/lib/catalog-cache.ts`, tag `catalog`). Anything that changes what the catalog shows calls `invalidateCatalogCache()` — approvals, deletes, movie/sighting edits, IMDb resync via `updateMovieOverride`. Writes that bypass the app (a script, `psql`) show up after `WHERERAT_CATALOG_CACHE_SECONDS`. If you add a new write path for movies, sightings, or submissions, call `invalidateCatalogCache()` after it.

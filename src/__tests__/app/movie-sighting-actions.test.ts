@@ -44,6 +44,8 @@ vi.mock("@/lib/movie-edit-store", () => ({
   updateMovieOverride: vi.fn(),
 }));
 vi.mock("@/lib/movie-imdb-sync", () => ({
+  IMDB_GRAPHQL_HEADERS: { "Content-Type": "application/json", Referer: "https://www.imdb.com/" },
+  isImdbTitleId: (v: string) => /^tt\d{7,9}$/.test(v),
   fetchImdbMedia: vi.fn(),
   fetchImdbRelated: vi.fn(),
 }));

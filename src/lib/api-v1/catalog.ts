@@ -1,12 +1,10 @@
-import { getDeletedMovieIds } from "@/lib/movie-edit-store";
+import { getCatalogGenres, searchCatalogMovies } from "@/lib/movie-catalog";
 import {
-  getCatalogGenres,
-  getCatalogMovies,
-  searchCatalogMovies,
-} from "@/lib/movie-catalog";
-import { getMergedSightingsForMovie } from "@/lib/moderation-store";
-import { estimateRatsForAppearance } from "@/lib/whererat";
-import { getMoviePageVisuals } from "@/lib/movie-page-visuals";
+  getCachedCatalogListMovies,
+  getCachedSightingIndex,
+  rankMovies,
+} from "@/lib/catalog-browse";
+import { getMoviePagePalettes } from "@/lib/movie-page-visuals";
 
 export const V1_CATALOG_PAGE_DEFAULT = 12;
 export const V1_CATALOG_PAGE_MAX = 50;
@@ -51,60 +49,24 @@ export async function getV1CatalogJson(input: {
   const pageSize = clampV1PageSize(input.pageSize);
   const currentPage = parseV1Page(String(input.page), 1);
 
-  const deletedMovieIds = await getDeletedMovieIds();
-  const catalogMovies = await getCatalogMovies();
-  const movieIndexById = new Map(catalogMovies.map((movie, index) => [movie.id, index]));
-
-  const filteredResults = (await searchCatalogMovies({ query, genre })).filter(
-    (movie) => !deletedMovieIds.has(movie.id),
-  );
-
-  const resultMetrics = await Promise.all(
-    filteredResults.map(async (movie) => {
-      const sightings = await getMergedSightingsForMovie(movie.id);
-      const visuals = await getMoviePageVisuals(movie);
-      const latestSightingMs = sightings.reduce((latest, sighting) => {
-        const ms = sighting.submissionReviewedAtISO
-          ? Date.parse(sighting.submissionReviewedAtISO)
-          : 0;
-        return Number.isFinite(ms) ? Math.max(latest, ms) : latest;
-      }, 0);
-      const ratsLogged = sightings.reduce(
-        (sum, sighting) => sum + estimateRatsForAppearance(sighting),
-        0,
-      );
-      return {
-        movie,
-        pagePalette: visuals.palette,
-        pagePaletteDark: visuals.paletteDark,
-        sightingCount: sightings.length,
-        latestSightingMs,
-        ratsLogged,
-        catalogIndex: movieIndexById.get(movie.id) ?? 0,
-      };
-    }),
-  );
-
-  const sortedMetrics = [...resultMetrics].sort((a, b) => {
-    if (sort === "latest-sighting") {
-      if (b.latestSightingMs !== a.latestSightingMs) return b.latestSightingMs - a.latestSightingMs;
-      return b.catalogIndex - a.catalogIndex;
-    }
-    if (sort === "most-rats-logged") {
-      if (b.ratsLogged !== a.ratsLogged) return b.ratsLogged - a.ratsLogged;
-      return b.sightingCount - a.sightingCount;
-    }
-    if (sort === "total-sightings") {
-      if (b.sightingCount !== a.sightingCount) return b.sightingCount - a.sightingCount;
-      return b.ratsLogged - a.ratsLogged;
-    }
-    return b.catalogIndex - a.catalogIndex;
-  });
+  const [catalogMovies, sightingIndex] = await Promise.all([
+    getCachedCatalogListMovies(),
+    getCachedSightingIndex(),
+  ]);
+  // The catalog read already excludes soft-deleted movies.
+  const filteredResults = await searchCatalogMovies({ query, genre, movies: catalogMovies });
+  const sortedMetrics = rankMovies(filteredResults, catalogMovies, sightingIndex, sort);
 
   const totalResults = sortedMetrics.length;
   const pageOffset = (currentPage - 1) * pageSize;
-  const pagedMetrics = sortedMetrics.slice(pageOffset, pageOffset + pageSize);
-  const genres = await getCatalogGenres();
+  // Palettes are only needed for the movies on this page, not every match.
+  const pagedMetrics = await Promise.all(
+    sortedMetrics.slice(pageOffset, pageOffset + pageSize).map(async (item) => {
+      const { palette, paletteDark } = await getMoviePagePalettes(item.movie);
+      return { ...item, pagePalette: palette, pagePaletteDark: paletteDark };
+    }),
+  );
+  const genres = await getCatalogGenres(catalogMovies);
 
   return {
     version: 1 as const,

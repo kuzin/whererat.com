@@ -99,7 +99,7 @@ describe("escaping", () => {
 
   // Paragraph text is user-controlled in news digests (the post body). A body that
   // starts with "<span " is currently emitted as raw HTML instead of escaped.
-  it.fails("BUG: paragraph text starting with '<span ' bypasses escaping (HTML injection into emails)", () => {
+  it("BUG: paragraph text starting with '<span ' bypasses escaping (HTML injection into emails)", () => {
     const { html } = render({
       blocks: [{ kind: "paragraph", text: `<span onmouseover="steal()">hi</span><img src=//evil.example/t.gif>` }],
     });
@@ -275,10 +275,40 @@ describe("plain-text part", () => {
     }
   });
 
-  it.fails("BUG: HTML tag/date paragraphs (starting '<span ') leak raw markup into the plain-text part", () => {
-    const { text } = render({
-      blocks: [{ kind: "paragraph", text: `<span style="color:red">Announcement</span><span>May 1, 2026</span>` }],
+  it("the tag/date chip is plain text in the text part and escaped (never raw markup) in the HTML", () => {
+    const { text, html } = render({
+      blocks: [
+        {
+          kind: "meta",
+          label: "Announcement",
+          date: "May 1, 2026",
+          colors: { bg: "#e0edff", color: "#1e40af", border: "#93c5fd" },
+        },
+      ],
     });
+    expect(text).toContain("Announcement · May 1, 2026");
     expect(text).not.toContain("<span");
+    expect(html).toContain(">Announcement</span>");
+  });
+
+  it("meta label, date and colours cannot inject markup or break out of the style attribute", () => {
+    const { html } = render({
+      blocks: [
+        {
+          kind: "meta",
+          label: '<img src=//evil.example/t.gif>',
+          date: '"><script>alert(1)</script>',
+          colors: { bg: 'red;"><img src=x onerror=alert(1)>', color: "#000", border: "#000" },
+        },
+      ],
+    });
+    expect(html).not.toContain("<img src=//evil.example");
+    expect(html).not.toContain("<script>alert(1)");
+    expect(html).not.toContain("onerror=alert(1)>");
+  });
+
+  it("the footer note is repeated in the plain-text part (it carries the unsubscribe link)", () => {
+    const { text } = render({ blocks: [], footerNote: "Unsubscribe: https://whererat.com/u?token=abc" });
+    expect(text).toContain("Unsubscribe: https://whererat.com/u?token=abc");
   });
 });

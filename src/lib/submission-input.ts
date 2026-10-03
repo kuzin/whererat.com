@@ -38,6 +38,23 @@ export function cleanText(value: unknown, maxLength: number): string {
   return chars.length > maxLength ? chars.slice(0, maxLength).join("").trim() : stripped;
 }
 
+/** A header value (e-mail Subject) must be one line, or its text could inject extra headers. */
+export function oneLine(value: string): string {
+  return value.replace(/[\r\n\u2028\u2029]+/g, " ").trim();
+}
+
+/** Image focal point (percent): finite and within 0–100, else the centre. */
+export function parsePercentValue(value: unknown, fallback = 50): number {
+  const n = typeof value === "string" ? Number.parseFloat(value) : Number.NaN;
+  return Number.isFinite(n) ? Math.min(100, Math.max(0, n)) : fallback;
+}
+
+/** Image zoom factor: finite and within 1–4, else 1. */
+export function parseZoomValue(value: unknown): number {
+  const n = typeof value === "string" ? Number.parseFloat(value) : Number.NaN;
+  return Number.isFinite(n) ? Math.min(4, Math.max(1, n)) : 1;
+}
+
 /** Strict integer parse: "12" ok; "12.5", "1e3", "abc", "" → undefined. */
 export function parseStrictInt(value: unknown, min: number, max: number): number | undefined {
   if (typeof value !== "string" || !/^\s*-?\d{1,15}\s*$/.test(value)) return undefined;

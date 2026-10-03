@@ -1,5 +1,6 @@
 import type { Sighting, SightingImageSlot } from "@/lib/whererat";
 import { getDbPool, withTransaction } from "@/lib/db";
+import { invalidateCatalogCache } from "@/lib/catalog-cache";
 
 export async function getSightingOverrides() {
   const pool = getDbPool();
@@ -86,6 +87,7 @@ export async function updateSightingOverride(
       [sightingId, override.imageUrl, override.imageAlt ?? null],
     );
   }
+  invalidateCatalogCache();
 }
 
 /**
@@ -103,7 +105,7 @@ export async function replaceSightingImages(
   images: SightingImageSlot[],
 ): Promise<boolean> {
   const slots = images.slice(0, 5);
-  return withTransaction(async (client) => {
+  const saved = await withTransaction(async (client) => {
     if (sightingId.startsWith("queue-")) {
       const submissionId = sightingId.slice("queue-".length);
       const live = await client.query(
@@ -149,6 +151,8 @@ export async function replaceSightingImages(
     await client.query(`update sightings set updated_at = now() where id = $1`, [sightingId]);
     return true;
   });
+  if (saved) invalidateCatalogCache();
+  return saved;
 }
 
 export async function deleteSightingById(sightingId: string) {
@@ -158,4 +162,5 @@ export async function deleteSightingById(sightingId: string) {
     `update sightings set is_deleted = true, updated_at = now() where id = $1`,
     [sightingId],
   );
+  invalidateCatalogCache();
 }

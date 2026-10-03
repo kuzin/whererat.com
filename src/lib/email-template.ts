@@ -39,6 +39,8 @@ export type EmailImage = {
 export type EmailContentBlock =
   | { kind: "heading"; text: string }
   | { kind: "paragraph"; text: string; muted?: boolean; marginTop?: number; marginBottom?: number }
+  /** A coloured label chip plus a date ("Announcement  May 1, 2026"). All values are escaped. */
+  | { kind: "meta"; label: string; date?: string; colors: { bg: string; color: string; border: string }; marginTop?: number; marginBottom?: number }
   | { kind: "keyValue"; rows: Array<{ label: string; value: string }> }
   | { kind: "quote"; text: string }
   | { kind: "gallery"; images: EmailImage[] }
@@ -104,11 +106,16 @@ function renderBlock(block: EmailContentBlock, centered?: boolean): string {
       const marginBottom = typeof block.marginBottom === "number" ? block.marginBottom : 14;
       const marginStyle = marginTop === 0 && marginBottom === 14 ? "" : `margin:${marginTop}px 0 ${marginBottom}px;`;
       const baseStyle = `${marginStyle || "margin:0 0 14px;"}font-family:${FONT_STACK};font-size:15px;line-height:1.55;color:${block.muted ? C.muted : C.text}${centered ? ";text-align:center" : ""}`;
-      // Tag/date blocks contain raw HTML spans — pass through without escaping
-      if (typeof block.text === "string" && block.text.trim().startsWith("<span ")) {
-        return `<p style="${baseStyle}">${block.text}</p>`;
-      }
+      // Always escaped: paragraph text may come from owner/public input.
       return `<p style="${baseStyle}">${escapeHtml(block.text)}</p>`;
+    }
+    case "meta": {
+      const marginTop = block.marginTop ?? 0;
+      const marginBottom = block.marginBottom ?? 14;
+      // Colours are interpolated into a style attribute, so only plain colour tokens are allowed.
+      const safeColor = (value: string) => (/^[#a-zA-Z0-9(),.%\s-]{1,60}$/.test(value) ? value : "#888888");
+      const { bg, color, border } = block.colors;
+      return `<p style="margin:${marginTop}px 0 ${marginBottom}px;font-family:${FONT_STACK}${centered ? ";text-align:center" : ""}"><span style="display:inline-block;padding:2px 10px 2px 8px;font-size:12px;font-weight:700;border-radius:8px;background:${safeColor(bg)};color:${safeColor(color)};border:1px solid ${safeColor(border)};margin-right:8px;vertical-align:middle;">${escapeHtml(block.label)}</span>${block.date ? `<span style="font-size:13px;color:#888;vertical-align:middle;">${escapeHtml(block.date)}</span>` : ""}</p>`;
     }
     case "keyValue": {
       const rowsHtml = block.rows
@@ -203,6 +210,8 @@ function blockToText(block: EmailContentBlock): string {
       return `\n${block.text}\n${"-".repeat(Math.min(block.text.length, 40))}`;
     case "paragraph":
       return block.text;
+    case "meta":
+      return block.date ? `${block.label} · ${block.date}` : block.label;
     case "keyValue":
       return block.rows.map((r) => `${r.label}: ${r.value}`).join("\n");
     case "quote":
@@ -358,6 +367,8 @@ export function renderBrandedEmail(email: BrandedEmail): { html: string; text: s
   if (email.footerUnsubscribeUrl) {
     textParts.push("", `${OPTED_IN_LINE} Unsubscribe: ${email.footerUnsubscribeUrl}`);
   }
+  // The footer holds the "why you got this" line and, for newsletters, the unsubscribe URL.
+  if (email.footerNote) textParts.push("", email.footerNote);
   const text = textParts.join("\n");
 
   return { html, text };

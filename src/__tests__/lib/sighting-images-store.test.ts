@@ -7,6 +7,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const h = vi.hoisted(() => ({
   clientQuery: vi.fn(),
+  invalidate: vi.fn(),
   liveRowCount: 1,
 }));
 
@@ -15,11 +16,13 @@ vi.mock("@/lib/db", () => ({
   withTransaction: async (fn: (client: { query: typeof h.clientQuery }) => unknown) =>
     fn({ query: h.clientQuery }),
 }));
+vi.mock("@/lib/catalog-cache", () => ({ invalidateCatalogCache: h.invalidate }));
 
 import { replaceSightingImages } from "@/lib/sighting-edit-store";
 
 beforeEach(() => {
   h.liveRowCount = 1;
+  h.invalidate.mockReset();
   h.clientQuery.mockReset();
   h.clientQuery.mockImplementation(async (sql: string) =>
     /^\s*select 1/i.test(sql) ? { rows: [], rowCount: h.liveRowCount } : { rows: [], rowCount: 1 },
@@ -94,5 +97,20 @@ describe("replaceSightingImages — catalog sighting", () => {
     h.liveRowCount = 0;
     expect(await replaceSightingImages("s-gone", slots)).toBe(false);
     expect(calls()).toHaveLength(1);
+  });
+});
+
+describe("replaceSightingImages — catalog cache", () => {
+  it("expires cached catalog reads after a save, so public pages show the new images", async () => {
+    await replaceSightingImages("queue-sub-1", slots);
+    await replaceSightingImages("s-1", slots);
+    expect(h.invalidate).toHaveBeenCalledTimes(2);
+  });
+
+  it("leaves the cache alone when nothing was saved", async () => {
+    h.liveRowCount = 0;
+    await replaceSightingImages("queue-sub-gone", slots);
+    await replaceSightingImages("s-gone", slots);
+    expect(h.invalidate).not.toHaveBeenCalled();
   });
 });

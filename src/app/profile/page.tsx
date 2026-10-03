@@ -98,13 +98,15 @@ export default async function ProfilePage({
                   className="wr-input"
                 />
               </label>
-              <label className="flex flex-col gap-2 text-sm font-bold text-stone-700 dark:text-stone-200">
+              <div className="flex flex-col gap-2 text-sm font-bold text-stone-700 dark:text-stone-200">
                 Role
-                <select name="role" defaultValue={account.role} className="wr-select">
-                  <option value="owner">Owner</option>
-                  <option value="moderator">Moderator</option>
-                </select>
-              </label>
+                <p className="wr-input flex items-center font-medium capitalize" data-testid="profile-role">
+                  {account.role}
+                </p>
+                <p className="text-xs font-medium text-stone-500 dark:text-stone-400">
+                  Roles are managed by an owner on the Users page.
+                </p>
+              </div>
               <AvatarUploadField initialAvatarUrl={account.avatarUrl} displayName={account.name} />
               <button type="submit" className="wr-btn-primary">
                 Save profile changes

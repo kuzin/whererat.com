@@ -21,6 +21,8 @@ vi.mock("pg", () => ({
   },
 }));
 vi.mock("@/lib/community-movie-store", () => ({ ensureCommunityMovieForSubmission: vi.fn() }));
+const invalidate = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/catalog-cache", () => ({ invalidateCatalogCache: invalidate }));
 vi.mock("@/lib/movie-catalog", () => ({ findCatalogMovieForSubmission: vi.fn() }));
 vi.mock("@/lib/submitter-notify", () => ({ notifySubmitterOfDecision: vi.fn() }));
 vi.mock("@/lib/sighting-edit-store", () => ({
@@ -207,6 +209,7 @@ function updated(p: Pool = pool) {
 const OLD_POSTER = "https://image.tmdb.org/t/p/old-poster.jpg";
 
 beforeEach(() => {
+  invalidate.mockReset();
   mockEnsure.mockReset().mockResolvedValue({ id: "community-x" } as never);
   mockFind.mockReset().mockResolvedValue({ id: "movie-1", slug: "ratatouille" } as never);
   mockNotify.mockReset().mockResolvedValue(undefined);
@@ -640,5 +643,32 @@ describe("addSubmission", () => {
       err = e;
     }
     expect(err instanceof PgError).toBe(false);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// catalog cache invalidation
+// ─────────────────────────────────────────────────────────────────────────────
+describe("reviewSubmission: catalog cache", () => {
+  it.each(["approved", "edited and approved", "rejected", "edited"] as const)(
+    "expires the catalog cache once the %j decision is committed",
+    async (decision) => {
+      await reviewSubmission({ submissionId: "sub-1", decision, moderator });
+      expect(invalidate).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("does not expire it when the transaction fails (nothing changed)", async () => {
+    use({ fail: (sql) => (sql.startsWith("insert into review_actions") ? new PgError("23514", "check") : undefined) });
+    await expect(reviewSubmission({ submissionId: "sub-1", decision: "approved", moderator })).rejects.toThrow();
+    expect(invalidate).not.toHaveBeenCalled();
+  });
+
+  it("filing a new (pending) submission does not touch the public catalog", async () => {
+    await addSubmission({
+      movieTitle: "Ratatouille", imdbId: "tt0382932", timestamp: "42%", description: "d",
+      spoiler: false, approximateRatCount: 1, submittedBy: "Alice",
+    } as never);
+    expect(invalidate).not.toHaveBeenCalled();
   });
 });

@@ -142,19 +142,19 @@ export type Movie = {
     syncedHeaderBannerUrl?: string;
     /** Single accent color override — palette is auto-derived from this. null explicitly clears a previously saved value. */
     overrideAccent?: string | null;
-    /** Optional manual page color overrides used by the movie page. */
+    /** Optional manual page color overrides used by the movie page. null explicitly clears a saved palette. */
     pagePalette?: {
       wash: string;
       columnWash: string;
       accent: string;
       heroBloom: string;
-    };
+    } | null;
     pagePaletteDark?: {
       wash: string;
       columnWash: string;
       accent: string;
       heroBloom: string;
-    };
+    } | null;
     /** Raw snapshot of fields pulled from the most recent sync run. */
     syncSnapshot?: Record<string, unknown>;
     /** Human-readable field labels that changed in the latest sync. */

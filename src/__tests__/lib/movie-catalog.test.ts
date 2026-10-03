@@ -12,12 +12,9 @@ const h = vi.hoisted(() => ({
   trgmFails: false,
   ftsFails: false,
   moviesQueryFails: false,
-  stats: {
-    movies: "0",
-    sightings: "0",
-    spoilers: "0",
-    sightingRows: [] as Row[],
-  },
+  /** What the stats SQL would return: movie count, plus the single sightings aggregate row. */
+  stats: { movies: "0", sightings: "0", spoilers: "0", rats: "0" } as Row,
+  noStatsRow: false,
   query: vi.fn(),
 }));
 
@@ -32,6 +29,11 @@ import {
   getCatalogGenres,
   getCatalogRodentTypes,
   getCatalogStatsWithCommunity,
+  getCatalogListMovies,
+  getCatalogIdentities,
+  buildCatalogLookup,
+  resolveMovieForSubmission,
+  findCatalogMovieForSubmission,
 } from "@/lib/movie-catalog";
 
 const FALLBACK_POSTER = "https://placehold.co/600x900/292524/fef3c7/png?text=Community+Movie";
@@ -65,7 +67,8 @@ beforeEach(() => {
   h.trgmFails = false;
   h.ftsFails = false;
   h.moviesQueryFails = false;
-  h.stats = { movies: "0", sightings: "0", spoilers: "0", sightingRows: [] };
+  h.stats = { movies: "0", sightings: "0", spoilers: "0", rats: "0" };
+  h.noStatsRow = false;
   h.query.mockReset();
   h.query.mockImplementation(async (sql: string, params?: unknown[]) => {
     if (isSearchSql(sql)) {
@@ -75,13 +78,21 @@ beforeEach(() => {
       void params;
       return { rows: h.searchRows };
     }
+    if (sql.includes("where slug = $1")) {
+      if (h.moviesQueryFails) throw new Error("db down");
+      return { rows: h.movieRows.filter((r) => r.slug === params?.[0]).slice(0, 1) };
+    }
     if (sql.includes("order by created_at asc")) {
       if (h.moviesQueryFails) throw new Error("db down");
       return { rows: h.movieRows };
     }
-    if (sql.includes("spoiler = true")) return { rows: [{ count: h.stats.spoilers }] };
-    if (sql.includes("approximate_rat_count")) return { rows: h.stats.sightingRows };
-    if (sql.includes("from sightings")) return { rows: [{ count: h.stats.sightings }] };
+    if (sql.includes("as rats")) {
+      return {
+        rows: h.noStatsRow
+          ? []
+          : [{ sightings: h.stats.sightings, spoilers: h.stats.spoilers, rats: h.stats.rats }],
+      };
+    }
     if (sql.includes("from movies")) return { rows: [{ count: h.stats.movies }] };
     throw new Error(`unexpected sql: ${sql}`);
   });
@@ -171,7 +182,7 @@ describe("getCatalogMovies", () => {
       expect((await getCatalogMovies())[0]!.backdropUrl).toBe(FALLBACK_BACKDROP);
     });
 
-    it.fails("BUG: protocol-relative '//host/x.png' is accepted as a 'local' path (startsWith('/'))", async () => {
+    it("BUG: protocol-relative '//host/x.png' is accepted as a 'local' path (startsWith('/'))", async () => {
       expect(await poster("//evil.example/x.png")).toBe(FALLBACK_POSTER);
     });
   });
@@ -191,6 +202,20 @@ describe("lookups", () => {
     expect((await getCatalogMovieBySlug("m2-slug"))?.id).toBe("m2");
     expect(await getCatalogMovieBySlug("nope")).toBeUndefined();
     expect(await getCatalogMovieBySlug("")).toBeUndefined();
+  });
+
+  it("getCatalogMovieBySlug is a single bound-parameter row read, not a catalog scan", async () => {
+    await getCatalogMovieBySlug("m1-slug' OR '1'='1");
+    expect(h.query).toHaveBeenCalledTimes(1);
+    const [sql, params] = h.query.mock.calls[0]!;
+    expect(sql).toMatch(/where slug = \$1 and is_deleted = false/);
+    expect(sql).toMatch(/limit 1/);
+    expect(params).toEqual(["m1-slug' OR '1'='1"]);
+  });
+
+  it("getCatalogMovieBySlug hides a row without a valid IMDb id, like the full catalog does", async () => {
+    h.movieRows = [row("bad", "Broken", "not-an-id")];
+    expect(await getCatalogMovieBySlug("bad-slug")).toBeUndefined();
   });
 
   it("getCatalogMovieByImdbId accepts bare ids, urls and mixed case", async () => {
@@ -369,7 +394,7 @@ describe("searchCatalogMovies", () => {
     });
   });
 
-  it.fails("BUG: LIKE wildcards in the query are not escaped — `imdb_id ilike $1` makes q='%' match every movie", async () => {
+  it("BUG: LIKE wildcards in the query are not escaped — `imdb_id ilike $1` makes q='%' match every movie", async () => {
     await searchCatalogMovies({ query: "%" });
     const [sql] = searchCalls()[0]!;
     // The raw (unescaped) search string must not be used as an ILIKE pattern.
@@ -401,30 +426,28 @@ describe("getCatalogRodentTypes", () => {
 });
 
 describe("getCatalogStatsWithCommunity", () => {
-  it("returns counts and tallies rats from approximate counts, with swarm/default fallbacks", async () => {
-    h.stats = {
-      movies: "12",
-      sightings: "40",
-      spoilers: "5",
-      sightingRows: [
-        { approximate_rat_count: 3, scene_type: "cameo" },
-        { approximate_rat_count: 2.9, scene_type: "cameo" }, // floored to 2
-        { approximate_rat_count: null, scene_type: "swarm" }, // 6
-        { approximate_rat_count: null, scene_type: "cameo" }, // 1
-        { approximate_rat_count: 0, scene_type: "swarm" }, // <1 => treated as unknown => 6
-        { approximate_rat_count: 50000, scene_type: "swarm" }, // capped at 9999
-      ],
-    };
-    const out = await getCatalogStatsWithCommunity();
-    expect(out).toEqual({
+  it("returns the counts and rat tally computed by the database", async () => {
+    h.stats = { movies: "12", sightings: "40", spoilers: "5", rats: "10017" };
+    expect(await getCatalogStatsWithCommunity()).toEqual({
       movies: 12,
       sightings: 40,
       spoilerSightings: 5,
-      ratsTallied: 3 + 2 + 6 + 1 + 6 + 9999,
+      ratsTallied: 10017,
     });
   });
 
+  it("aggregates in SQL: two queries, no sighting rows pulled into the app", async () => {
+    await getCatalogStatsWithCommunity();
+    expect(h.query).toHaveBeenCalledTimes(2);
+    const sightingsSql = h.query.mock.calls.map(([sql]) => String(sql)).find((sql) => sql.includes("as rats"))!;
+    // Same per-row rule as estimateRatsForAppearance: clamped count, else swarm = 6, else 1.
+    expect(sightingsSql).toMatch(/least\(9999, floor\(approximate_rat_count\)\)/);
+    expect(sightingsSql).toMatch(/scene_type = 'swarm' then 6/);
+    expect(sightingsSql).toMatch(/else 1/);
+  });
+
   it("is all zeros for an empty database", async () => {
+    h.noStatsRow = true;
     expect(await getCatalogStatsWithCommunity()).toEqual({
       movies: 0,
       sightings: 0,
@@ -434,11 +457,9 @@ describe("getCatalogStatsWithCommunity", () => {
   });
 
   it("coerces unparseable counts to 0 rather than NaN", async () => {
-    h.stats = { movies: "abc", sightings: "", spoilers: "x", sightingRows: [] };
+    h.stats = { movies: "abc", sightings: "", spoilers: "x", rats: "?" };
     const out = await getCatalogStatsWithCommunity();
-    expect(out.movies).toBe(0);
-    expect(out.sightings).toBe(0);
-    expect(out.spoilerSightings).toBe(0);
+    expect(out).toEqual({ movies: 0, sightings: 0, spoilerSightings: 0, ratsTallied: 0 });
   });
 
   it("only counts non-deleted rows in every query", async () => {
@@ -446,5 +467,113 @@ describe("getCatalogStatsWithCommunity", () => {
     for (const [sql] of h.query.mock.calls) {
       expect(sql).toMatch(/is_deleted = false/);
     }
+  });
+});
+
+describe("getCatalogListMovies", () => {
+  it("maps rows exactly like getCatalogMovies", async () => {
+    h.movieRows = [row("m1", "Ratatouille", "tt0382932", { tmdb_id: "2062", poster_url: "" })];
+    const [full] = await getCatalogMovies();
+    const [list] = await getCatalogListMovies();
+    expect(list).toEqual(full);
+  });
+
+  it("projects only the list-view metadata keys in SQL, bound as parameters", async () => {
+    await getCatalogListMovies();
+    const [sql, params] = h.query.mock.calls[0]!;
+    expect(sql).toMatch(/jsonb_each\(metadata\)/);
+    expect(sql).toMatch(/where is_deleted = false/);
+    const [metadataKeys, snapshotKeys] = params as [string[], string[]];
+    // Everything the home page, v1 catalog and getMoviePath read:
+    expect(metadataKeys).toEqual(
+      expect.arrayContaining(["rating", "imdbRating", "imdbVotes", "overrideAccent", "pagePalette", "pagePaletteDark", "syncedPalette", "syncedPaletteDark", "syncedHeaderBannerUrl"]),
+    );
+    expect(snapshotKeys).toEqual(
+      expect.arrayContaining(["Type", "Year", "totalSeasons", "totalEpisodes", "episodeCount"]),
+    );
+    // ...and never the heavy blobs.
+    for (const heavy of ["imdbReviews", "imdbRelated", "imdbImages", "imdbVideos", "cast"]) {
+      expect(metadataKeys).not.toContain(heavy);
+    }
+  });
+
+  it("drops rows without a valid IMDb id", async () => {
+    h.movieRows = [row("m1", "Ratatouille", "tt0382932"), row("bad", "Broken", "nope")];
+    expect((await getCatalogListMovies()).map((m) => m.id)).toEqual(["m1"]);
+  });
+});
+
+/** A real mapped Movie (via the fake pool) to hand to functions that accept a caller-supplied list. */
+async function loadOneMovie() {
+  h.movieRows = [row("m1", "Ratatouille", "tt0382932")];
+  return getCatalogMovies();
+}
+
+describe("catalog identity lookup", () => {
+  it("getCatalogIdentities reads only id/title/imdb and normalises the IMDb id", async () => {
+    h.movieRows = [
+      { id: "m1", title: "Ratatouille", imdb_id: "https://www.imdb.com/title/TT0382932/" },
+      { id: "bad", title: "Broken", imdb_id: "nope" },
+    ];
+    expect(await getCatalogIdentities()).toEqual([
+      { id: "m1", title: "Ratatouille", externalIds: { imdb: "tt0382932" } },
+    ]);
+    const [sql] = h.query.mock.calls[0]!;
+    expect(sql).not.toMatch(/metadata|summary/);
+  });
+
+  const movies = [
+    { id: "a", title: "Life", externalIds: { imdb: "tt0000001" } },
+    { id: "b", title: "  Life  ", externalIds: { imdb: "tt0000002" } },
+    { id: "c", title: "Ratatouille", externalIds: { imdb: "tt0382932" } },
+  ];
+  const lookup = buildCatalogLookup(movies);
+
+  it("an IMDb id is authoritative — no title fallback when it matches nothing", () => {
+    expect(resolveMovieForSubmission({ imdbId: "tt0000002", movieTitle: "Ratatouille" }, lookup)?.id).toBe("b");
+    expect(resolveMovieForSubmission({ imdbId: "tt9999999", movieTitle: "Ratatouille" }, lookup)).toBeUndefined();
+  });
+
+  it("accepts IMDb URLs and mixed case", () => {
+    expect(resolveMovieForSubmission({ imdbId: "https://imdb.com/title/TT0382932/", movieTitle: "" }, lookup)?.id).toBe("c");
+  });
+
+  it("without an id, matches the title exactly, case- and padding-insensitively, first wins", () => {
+    expect(resolveMovieForSubmission({ movieTitle: "  rAtAtOuIlLe " }, lookup)?.id).toBe("c");
+    expect(resolveMovieForSubmission({ movieTitle: "life" }, lookup)?.id).toBe("a");
+    expect(resolveMovieForSubmission({ movieTitle: "Rat" }, lookup)).toBeUndefined();
+  });
+
+  it("a blank title with no id resolves to nothing", () => {
+    expect(resolveMovieForSubmission({ imdbId: null, movieTitle: "   " }, lookup)).toBeUndefined();
+  });
+
+  it("findCatalogMovieForSubmission reuses a supplied movie list instead of reading the catalog", async () => {
+    const supplied = await loadOneMovie();
+    h.query.mockClear();
+    const found = await findCatalogMovieForSubmission({ imdbId: "tt0382932", movieTitle: "x" }, supplied);
+    expect(found?.id).toBe("m1");
+    expect(h.query).not.toHaveBeenCalled();
+  });
+
+  it("findCatalogMovieForSubmission skips the catalog read when there is nothing to match on", async () => {
+    expect(await findCatalogMovieForSubmission({ imdbId: undefined, movieTitle: "  " })).toBeUndefined();
+    expect(h.query).not.toHaveBeenCalled();
+  });
+});
+
+describe("caller-supplied movie lists", () => {
+  it("searchCatalogMovies filters the supplied list and does not read the catalog", async () => {
+    const supplied = await loadOneMovie();
+    h.query.mockClear();
+    expect(await searchCatalogMovies({ movies: supplied })).toEqual(supplied);
+    expect(await searchCatalogMovies({ movies: supplied, genre: "Horror" })).toEqual([]);
+    expect(h.query).not.toHaveBeenCalled();
+  });
+
+  it("getCatalogGenres derives genres from the supplied list without a query", async () => {
+    const mk = (genres: string[]) => ({ genres }) as never;
+    expect(await getCatalogGenres([mk(["Drama", "Comedy"]), mk(["Drama"])])).toEqual(["Comedy", "Drama"]);
+    expect(h.query).not.toHaveBeenCalled();
   });
 });

@@ -5,6 +5,8 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { MODERATOR_SESSION_COOKIE } from "@/lib/auth";
 import { verifyModeratorSession } from "@/lib/moderator-session";
+import { NEWS_ITEM_TYPES } from "@/lib/news-store";
+import { parsePercentValue, parseZoomValue } from "@/lib/submission-input";
 import {
     createNewsItem,
     updateNewsItem,
@@ -22,6 +24,12 @@ import {
 
 const MAX_NEWS_IMAGE_BYTES = 8 * 1024 * 1024;
 
+/** An unknown value would hit the table's CHECK constraint and surface as a 500. */
+function parseNewsType(raw: FormDataEntryValue | null): NewsItemType {
+    const value = typeof raw === "string" ? raw.trim() : "";
+    return NEWS_ITEM_TYPES.some((t) => t.value === value) ? (value as NewsItemType) : "announcement";
+}
+
 async function requireOwner() {
     const cookieStore = await cookies();
     const session = await verifyModeratorSession(
@@ -37,21 +45,22 @@ export async function createNewsItemAction(formData: FormData) {
     const session = await requireOwner();
     const title = (formData.get("title") as string | null)?.trim() ?? "";
     const body = (formData.get("body") as string | null)?.trim() ?? "";
-    const type = ((formData.get("type") as string | null) ?? "announcement") as NewsItemType;
+    const type = parseNewsType(formData.get("type"));
     const imageAlt = (formData.get("image_alt") as string | null)?.trim() || null;
     const publish = formData.get("publish") === "true";
-    const imagePositionX = parseFloat((formData.get("imagePositionX") as string | null) ?? "50") || 50;
-    const imagePositionY = parseFloat((formData.get("imagePositionY") as string | null) ?? "50") || 50;
-    const imageZoom = Math.max(1, parseFloat((formData.get("imageZoom") as string | null) ?? "1") || 1);
+    const imagePositionX = parsePercentValue(formData.get("imagePositionX"));
+    const imagePositionY = parsePercentValue(formData.get("imagePositionY"));
+    const imageZoom = parseZoomValue(formData.get("imageZoom"));
+
+    // Validate before touching storage, so a rejected form can't leave an orphaned upload.
+    if (!title || !body) {
+        return;
+    }
 
     const imageFile = formData.get("newsImage");
     const imageUrl = imageFile instanceof File && imageFile.size > 0
         ? (await persistImageFile(imageFile, { folder: "sightings", maxBytes: MAX_NEWS_IMAGE_BYTES })) ?? null
         : null;
-
-    if (!title || !body) {
-        return;
-    }
 
     await createNewsItem({
         title,
@@ -78,22 +87,22 @@ export async function updateNewsItemAction(formData: FormData) {
     const id = (formData.get("id") as string | null)?.trim() ?? "";
     const title = (formData.get("title") as string | null)?.trim() ?? "";
     const body = (formData.get("body") as string | null)?.trim() ?? "";
-    const type = ((formData.get("type") as string | null) ?? "announcement") as NewsItemType;
+    const type = parseNewsType(formData.get("type"));
     const imageAlt = (formData.get("image_alt") as string | null)?.trim() || null;
     const currentImageUrl = (formData.get("currentImageUrl") as string | null)?.trim() || null;
-    const imagePositionX = parseFloat((formData.get("imagePositionX") as string | null) ?? "50") || 50;
-    const imagePositionY = parseFloat((formData.get("imagePositionY") as string | null) ?? "50") || 50;
-    const imageZoom = Math.max(1, parseFloat((formData.get("imageZoom") as string | null) ?? "1") || 1);
+    const imagePositionX = parsePercentValue(formData.get("imagePositionX"));
+    const imagePositionY = parsePercentValue(formData.get("imagePositionY"));
+    const imageZoom = parseZoomValue(formData.get("imageZoom"));
+
+    if (!id || !title || !body) {
+        return;
+    }
 
     const imageFile = formData.get("newsImage");
     const uploadedUrl = imageFile instanceof File && imageFile.size > 0
         ? (await persistImageFile(imageFile, { folder: "sightings", maxBytes: MAX_NEWS_IMAGE_BYTES })) ?? null
         : null;
     const imageUrl = uploadedUrl ?? currentImageUrl;
-
-    if (!id || !title || !body) {
-        return;
-    }
 
     await updateNewsItem(id, { title, body, type, imageUrl, imageAlt, imagePositionX, imagePositionY, imageZoom });
 

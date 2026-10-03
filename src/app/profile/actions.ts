@@ -45,8 +45,11 @@ export async function updateProfile(formData: FormData) {
   const name = String(formData.get("name") ?? "").trim();
   const email = String(formData.get("email") ?? "").trim();
   const currentAvatarUrl = String(formData.get("currentAvatarUrl") ?? "").trim();
-  const roleRaw = String(formData.get("role") ?? "").trim().toLowerCase();
-  const role = roleRaw === "owner" ? "owner" : "moderator";
+  // The role is never taken from the form: a profile edit must not let anyone change
+  // their own privileges (that used to let any moderator promote themselves to owner).
+  // Roles are changed by an owner on the user-management screen. `session.role` comes
+  // from the live account, not the cookie.
+  const role = session.role;
   const uploadedAvatarUrl = await persistAvatarUpload(formData);
   const avatarUrl = uploadedAvatarUrl ?? currentAvatarUrl;
 
