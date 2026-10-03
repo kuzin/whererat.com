@@ -1,3 +1,4 @@
+import { isOffline } from "@/lib/offline";
 import sharp from "sharp";
 
 export type MoviePagePalette = {
@@ -137,6 +138,8 @@ function dominantFromRgb(rgb: Buffer, width: number, height: number) {
 export async function extractMoviePagePalette(
   imageUrl: string,
 ): Promise<MoviePagePalette | null> {
+  // Hermetic runs (e2e) must not reach out to image hosts.
+  if (isOffline()) return null;
   try {
     const buffer = Buffer.from(
       await (

@@ -12,6 +12,9 @@
     "test:coverage": "vitest run --coverage",
     "db:schema:apply": "tsx scripts/db-apply-schema.ts",
     "passwords:hash": "tsx scripts/hash-existing-passwords.ts",
+    "e2e": "tsx e2e/run.ts",
+    "e2e:db:start": "bash scripts/e2e-db.sh start",
+    "e2e:db:stop": "bash scripts/e2e-db.sh stop",
     "imdb:resync": "tsx scripts/imdb-resync-all.ts",
     "store:play:graphics": "tsx scripts/generate-play-store-graphics.ts",
     "store:play:backdrop": "tsx scripts/play-phone-backdrop.ts",
@@ -34,6 +37,7 @@
     "sharp": "^0.34.5"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@storybook/addon-essentials": "^8",
     "@storybook/addon-interactions": "^8",
     "@storybook/react-vite": "^8",

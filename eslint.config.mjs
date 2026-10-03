@@ -28,6 +28,12 @@ const eslintConfig = defineConfig([
       "jsx-a11y/role-has-required-aria-props": "error",
     },
   },
+  {
+    // Playwright fixtures hand tests a callback literally named `use`, which the
+    // React hooks rule mistakes for a hook.
+    files: ["e2e/**/*.ts"],
+    rules: { "react-hooks/rules-of-hooks": "off" },
+  },
   // Override default ignores of eslint-config-next.
   globalIgnores([
     // Default ignores of eslint-config-next:
@@ -36,6 +42,9 @@ const eslintConfig = defineConfig([
     "build/**",
     "next-env.d.ts",
     "apps/mobile/**",
+    "playwright-report/**",
+    "test-results/**",
+    ".e2e/**",
   ]),
 ]);
 
