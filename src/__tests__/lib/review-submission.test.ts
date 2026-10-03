@@ -5,6 +5,7 @@
  * submissions.approximate_rat_count BETWEEN 1 AND 9999) and deliberately gives
  * snapshot/rollback transaction semantics through `connect()` (BEGIN / COMMIT /
  * ROLLBACK), which is how the production code groups its multi-statement writes.
+ * Also covers editApprovedSubmission, the movie-page edit of a live sighting.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
@@ -30,7 +31,7 @@ vi.mock("@/lib/sighting-edit-store", () => ({
   getSightingOverrides: vi.fn().mockResolvedValue({}),
 }));
 
-import { addSubmission, reviewSubmission } from "@/lib/moderation-store";
+import { addSubmission, editApprovedSubmission, reviewSubmission } from "@/lib/moderation-store";
 import { ensureCommunityMovieForSubmission } from "@/lib/community-movie-store";
 import { findCatalogMovieForSubmission } from "@/lib/movie-catalog";
 import { notifySubmitterOfDecision } from "@/lib/submitter-notify";
@@ -101,7 +102,13 @@ function makePool(opts: { sub?: Partial<DbSub>; images?: Img[]; fail?: FailHook 
 
     if (s.startsWith("select count(*)")) return { rows: [{ count: "1" }] };
     if (s.includes("from submissions s")) {
+      // A single-row read (`where s.id = $1`) only finds that id.
+      if (params.length && params[0] !== state.submission.id) return { rows: [] };
       return { rows: [{ ...state.submission, images_json: state.images.length ? state.images : null }] };
+    }
+    if (s.startsWith("select 1 from submissions")) {
+      const live = params[0] === state.submission.id && state.submission.status === "approved";
+      return { rows: live ? [{ "?column?": 1 }] : [], rowCount: live ? 1 : 0 };
     }
     if (s.includes("from review_actions")) return { rows: [] };
     if (s.startsWith("update submissions")) {
@@ -670,5 +677,165 @@ describe("reviewSubmission: catalog cache", () => {
       spoiler: false, approximateRatCount: 1, submittedBy: "Alice",
     } as never);
     expect(invalidate).not.toHaveBeenCalled();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// editApprovedSubmission: the movie-page edit of a live sighting
+// ─────────────────────────────────────────────────────────────────────────────
+describe("editApprovedSubmission", () => {
+  const APPROVED = { status: "approved" };
+  const edit = (over: Partial<Parameters<typeof editApprovedSubmission>[0]> = {}) =>
+    editApprovedSubmission({
+      submissionId: "sub-1",
+      moderator,
+      reason: "Edited from movie page.",
+      edits: { title: "Fixed headline", description: "Fixed typo." },
+      ...over,
+    });
+  const writes = () => pool.calls.filter((c) => /^\s*(update|insert|delete)/i.test(c.sql));
+
+  it("saves the edits and keeps the submission approved", async () => {
+    use({ sub: APPROVED });
+    await expect(edit()).resolves.toBe(true);
+    expect(updated()).toMatchObject({ status: "approved", title: "Fixed headline", description: "Fixed typo." });
+    expect(pool.submission.status).toBe("approved");
+  });
+
+  it("logs ONE 'edited' audit row (not an approval) naming the moderator and the reason", async () => {
+    use({ sub: APPROVED });
+    await edit();
+    expect(pool.reviewActions).toEqual([
+      expect.objectContaining({
+        action: "edited",
+        submissionId: "sub-1",
+        moderatorId: "mod-1",
+        moderatorName: "Mo Derator",
+        note: "Edited from movie page.",
+        movieTitle: "Ratatouille",
+      }),
+    ]);
+  });
+
+  it("falls back to a default audit note when the reason is blank", async () => {
+    use({ sub: APPROVED });
+    await edit({ reason: "   " });
+    expect(pool.reviewActions[0]!.note).toBe("Edited after approval.");
+  });
+
+  it("never e-mails the submitter, however many times it is edited", async () => {
+    use({ sub: APPROVED });
+    await edit();
+    await edit({ edits: { title: "Fixed again" } });
+    expect(mockNotify).not.toHaveBeenCalled();
+    expect(pool.reviewActions.map((a) => a.action)).toEqual(["edited", "edited"]);
+  });
+
+  it("edits can never change the status", async () => {
+    use({ sub: APPROVED });
+    await edit({ edits: { status: "pending" } as never });
+    expect(updated()?.status).toBe("approved");
+  });
+
+  it.each(["pending", "rejected"])("a %j submission is refused: returns false and writes nothing", async (status) => {
+    use({ sub: { status } });
+    mockFind.mockResolvedValue(undefined);
+    await expect(edit()).resolves.toBe(false);
+    expect(writes()).toHaveLength(0);
+    expect(pool.submission.status).toBe(status);
+    expect(mockEnsure).not.toHaveBeenCalled();
+    expect(mockNotify).not.toHaveBeenCalled();
+    expect(invalidate).not.toHaveBeenCalled();
+  });
+
+  it("an unknown id returns false and writes nothing", async () => {
+    use({ sub: APPROVED });
+    await expect(edit({ submissionId: "does-not-exist" })).resolves.toBe(false);
+    expect(writes()).toHaveLength(0);
+  });
+
+  it("a denial that lands between the read and the save wins (re-checked under a row lock)", async () => {
+    use({
+      sub: APPROVED,
+      fail: (s) => {
+        if (s.startsWith("select 1 from submissions")) pool.submission.status = "rejected";
+        return undefined;
+      },
+    });
+    await expect(edit()).resolves.toBe(false);
+    expect(pool.updates).toHaveLength(0);
+    expect(pool.reviewActions).toHaveLength(0);
+    expect(pool.submission.status).toBe("rejected");
+    expect(invalidate).not.toHaveBeenCalled();
+    const lock = pool.calls.find((c) => /select 1 from submissions/i.test(c.sql))!;
+    expect(lock.sql).toMatch(/for update/i);
+    expect(lock.params).toEqual(["sub-1"]);
+  });
+
+  it("reads just the one submission, not the whole moderation store", async () => {
+    use({ sub: APPROVED });
+    await edit();
+    expect(pool.calls.some((c) => /from review_actions/i.test(c.sql))).toBe(false);
+    const read = pool.calls.find((c) => /from submissions s/i.test(c.sql))!;
+    expect(read.params).toEqual(["sub-1"]);
+  });
+
+  it("moving to a title not in the catalog creates it, without the old title's poster", async () => {
+    use({ sub: APPROVED });
+    mockFind.mockResolvedValue(undefined);
+    await edit({ edits: { movieTitle: "Life", imdbId: "tt5442430" } });
+    expect(mockEnsure).toHaveBeenCalledOnce();
+    expect(mockEnsure.mock.calls[0]![0]).toMatchObject({ imdbId: "tt5442430", moviePosterUrl: undefined });
+    expect(updated()).toMatchObject({ imdbId: "tt5442430", movieTitle: "Life", moviePosterUrl: null });
+  });
+
+  it("a title already in the catalog is not re-created", async () => {
+    use({ sub: APPROVED });
+    await edit({ edits: { movieTitle: "Ratatouille", imdbId: "tt0382932" } });
+    expect(mockEnsure).not.toHaveBeenCalled();
+    expect(updated()?.moviePosterUrl).toBe(OLD_POSTER);
+  });
+
+  it("clamps the rat count like a review does", async () => {
+    use({ sub: APPROVED });
+    await edit({ edits: { approximateRatCount: 123456 } });
+    expect(updated()?.approximateRatCount).toBe(9999);
+  });
+
+  it("replaces the image carousel in one transaction", async () => {
+    use({ sub: APPROVED, images: [{ url: "/old.png", alt: null, positionX: 50, positionY: 50, zoom: 1 }] });
+    await edit({ edits: { images: [{ url: "/new.png", alt: "new", positionX: 10, positionY: 20, zoom: 2 }] } });
+    expect(pool.images).toEqual([{ url: "/new.png", alt: "new", positionX: 10, positionY: 20, zoom: 2 }]);
+    const verbs = pool.calls.map((c) => c.sql.trim().toLowerCase()).filter((q) => /^(begin|commit|rollback)$/.test(q));
+    expect(verbs).toEqual(["begin", "commit"]);
+  });
+
+  it("a failed write rolls everything back and leaves the cache alone", async () => {
+    const imgs: Img[] = [{ url: "/keep.png", alt: null, positionX: 50, positionY: 50, zoom: 1 }];
+    use({
+      sub: APPROVED,
+      images: imgs,
+      fail: (s) => (s.startsWith("insert into review_actions") ? new Error("connection reset") : undefined),
+    });
+    await expect(edit({ edits: { title: "Lost", images: [] } })).rejects.toThrow("connection reset");
+    expect(pool.submission.title).toBe("Rat in kitchen");
+    expect(pool.images).toEqual(imgs);
+    expect(pool.reviewActions).toHaveLength(0);
+    expect(invalidate).not.toHaveBeenCalled();
+    expect(mockNotify).not.toHaveBeenCalled();
+  });
+
+  it("expires the catalog cache once the edit is committed", async () => {
+    use({ sub: APPROVED });
+    await edit();
+    expect(invalidate).toHaveBeenCalledTimes(1);
+  });
+
+  it("user text is only ever bound as parameters", async () => {
+    use({ sub: APPROVED });
+    const evil = "'); DELETE FROM submissions;--";
+    await edit({ submissionId: "sub-1", reason: evil, edits: { title: evil, description: evil } });
+    for (const c of pool.calls) expect(c.sql).not.toContain("DELETE FROM submissions;--");
+    expect(pool.reviewActions[0]!.note).toBe(evil);
   });
 });

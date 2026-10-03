@@ -163,7 +163,10 @@ export default async function ModerationPage({
       displayName: account.name,
       roleLabel: account.role === "owner" ? "Owner" : "Moderator",
       avatarUrl: account.avatarUrl || fallbackAvatarUrl(account.name),
-      reviewCount: store.reviewActions.filter((action) => action.moderatorId === account.id).length,
+      // Decisions only: saving edits (to a pending draft or a live sighting) isn't a review.
+      reviewCount: store.reviewActions.filter(
+        (action) => action.moderatorId === account.id && action.action !== "edited",
+      ).length,
     }))
     .sort((a, b) => b.reviewCount - a.reviewCount || a.displayName.localeCompare(b.displayName));
   return (
