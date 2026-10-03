@@ -1,5 +1,6 @@
 import { normalizeImdbId, type Movie, type Submission } from "@/lib/whererat";
 import { getDbPool } from "@/lib/db";
+import { invalidateCatalogCache } from "@/lib/catalog-cache";
 import { syncMovieFromImdb } from "@/lib/movie-imdb-sync";
 import { MAX_RELEASE_YEAR, MIN_RELEASE_YEAR, sanitizePosterUrl } from "@/lib/submission-input";
 
@@ -95,7 +96,10 @@ export async function ensureCommunityMovieForSubmission(
      returning ${MOVIE_COLUMNS}`,
     [imdbId],
   );
-  if (restored.rows[0]) return rowToMovie(restored.rows[0]);
+  if (restored.rows[0]) {
+    invalidateCatalogCache();
+    return rowToMovie(restored.rows[0]);
+  }
 
   const releaseYear = releaseYearOrCurrent(submission.movieYear);
   const slugBase = `${slugifyTitle(title) || imdbId}-${releaseYear}`;
@@ -156,6 +160,7 @@ export async function ensureCommunityMovieForSubmission(
         continue;
       }
       const newMovie = rowToMovie(inserted.rows[0]);
+      invalidateCatalogCache();
 
       // Fire-and-forget: enrich with OMDb metadata and IMDb rat facts.
       // Never blocks approval: a failed enrichment is logged and retried by the cron resync.

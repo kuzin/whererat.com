@@ -1,17 +1,19 @@
 import Image from "next/image";
 import Link from "next/link";
 import type { Metadata } from "next";
-import { getApprovedSubmissionRatTally } from "@/lib/moderation-store";
-import { getDeletedMovieIds } from "@/lib/movie-edit-store";
-import { estimateRatsForAppearance, getMoviePath, RODENT_TYPE_OPTIONS } from "@/lib/whererat";
+import { getMoviePath, RODENT_TYPE_OPTIONS } from "@/lib/whererat";
 import {
   getCatalogGenres,
   getCatalogRodentTypes,
-  getCatalogMovies,
   searchCatalogMovies,
-  getCatalogStatsWithCommunity,
 } from "@/lib/movie-catalog";
-import { getMergedSightingsForMovie, getMovieIdsWithRodentType } from "@/lib/moderation-store";
+import {
+  getCachedBrowseStats,
+  getCachedCatalogListMovies,
+  getCachedSightingIndex,
+  movieIdsWithRodentType,
+  rankMovies,
+} from "@/lib/catalog-browse";
 import {
   CatalogFilters,
   CatalogPagination,
@@ -89,52 +91,22 @@ export default async function Home({
   const view: CatalogView = single(params.view) === "card" ? "card" : "list";
   const rawPage = parseInt(single(params.page) ?? "1", 10);
   const currentPage = Number.isFinite(rawPage) && rawPage >= 1 ? rawPage : 1;
-  const deletedMovieIds = await getDeletedMovieIds();
-  const catalogMovies = await getCatalogMovies();
-  const movieIndexById = new Map(catalogMovies.map((movie, index) => [movie.id, index]));
+  // Three cached, independent reads (list-view movie fields, per-movie sighting metrics,
+  // site-wide tallies). The catalog already excludes soft-deleted movies.
+  const [catalogMovies, sightingIndex, stats] = await Promise.all([
+    getCachedCatalogListMovies(),
+    getCachedSightingIndex(),
+    getCachedBrowseStats(),
+  ]);
   const rodentMovieIds =
-    rodentType === "all" ? undefined : await getMovieIdsWithRodentType(rodentType);
-  const filteredResults = (await searchCatalogMovies({ query, genre, rodentMovieIds })).filter(
-    (movie) => !deletedMovieIds.has(movie.id),
-  );
-  const resultMetrics = await Promise.all(
-    filteredResults.map(async (movie) => {
-      const sightings = await getMergedSightingsForMovie(movie.id);
-      const latestSightingMs = sightings.reduce((latest, sighting) => {
-        const ms = sighting.submissionReviewedAtISO
-          ? Date.parse(sighting.submissionReviewedAtISO)
-          : 0;
-        return Number.isFinite(ms) ? Math.max(latest, ms) : latest;
-      }, 0);
-      const ratsLogged = sightings.reduce(
-        (sum, sighting) => sum + estimateRatsForAppearance(sighting),
-        0,
-      );
-      return {
-        movie,
-        sightings,
-        sightingCount: sightings.length,
-        latestSightingMs,
-        ratsLogged,
-        catalogIndex: movieIndexById.get(movie.id) ?? 0,
-      };
-    }),
-  );
-  const sortedMetrics = [...resultMetrics].sort((a, b) => {
-    if (sort === "latest-sighting") {
-      if (b.latestSightingMs !== a.latestSightingMs) return b.latestSightingMs - a.latestSightingMs;
-      return b.catalogIndex - a.catalogIndex;
-    }
-    if (sort === "most-rats-logged") {
-      if (b.ratsLogged !== a.ratsLogged) return b.ratsLogged - a.ratsLogged;
-      return b.sightingCount - a.sightingCount;
-    }
-    if (sort === "total-sightings") {
-      if (b.sightingCount !== a.sightingCount) return b.sightingCount - a.sightingCount;
-      return b.ratsLogged - a.ratsLogged;
-    }
-    return b.catalogIndex - a.catalogIndex;
+    rodentType === "all" ? undefined : movieIdsWithRodentType(sightingIndex, rodentType);
+  const filteredResults = await searchCatalogMovies({
+    query,
+    genre,
+    rodentMovieIds,
+    movies: catalogMovies,
   });
+  const sortedMetrics = rankMovies(filteredResults, catalogMovies, sightingIndex, sort);
   const totalResults = sortedMetrics.length;
   const pageOffset = (currentPage - 1) * PAGE_SIZE;
   const pagedMetrics = sortedMetrics.slice(pageOffset, pageOffset + PAGE_SIZE);
@@ -142,18 +114,12 @@ export default async function Home({
   const sightingCountByMovie = new Map(
     pagedMetrics.map((item) => [item.movie.id, item.sightingCount]),
   );
-  const sightingsByMovie = new Map(
-    pagedMetrics.map((item) => [item.movie.id, item.sightings]),
-  );
+  const isSeriesByMovie = new Map(pagedMetrics.map((item) => [item.movie.id, item.isSeries]));
   const catalogFiltersActive =
     query.trim().length > 0 || genre !== "all" || rodentType !== "all";
-  const stats = await getCatalogStatsWithCommunity();
-  const approvedSubmissionRats = await getApprovedSubmissionRatTally();
-  const ratsTallied = stats.ratsTallied + approvedSubmissionRats;
-  const [availableGenres, availableRodentTypes] = await Promise.all([
-    getCatalogGenres(),
-    getCatalogRodentTypes(),
-  ]);
+  const ratsTallied = stats.ratsTallied;
+  const availableGenres = await getCatalogGenres(catalogMovies);
+  const availableRodentTypes = await getCatalogRodentTypes();
 
   return (
     <main className="relative flex flex-1 flex-col">
@@ -220,8 +186,7 @@ export default async function Home({
                   <div className="grid gap-5 lg:grid-cols-2">
                     {results.map((movie) => {
                       const sightingCount = sightingCountByMovie.get(movie.id) ?? 0;
-                      const sightings = sightingsByMovie.get(movie.id) ?? [];
-                      const isSeriesTitle = sightings.some((sighting) => sighting.imdbKind === "series");
+                      const isSeriesTitle = isSeriesByMovie.get(movie.id) ?? false;
                       const syncSnapshot = movie.metadata.syncSnapshot as Record<string, unknown> | undefined;
                       const seriesYearRange = readSeriesYearRange(syncSnapshot);
                       const totalSeasons = readSeriesTotalSeasons(syncSnapshot);

@@ -7,7 +7,7 @@ vi.mock("@/lib/movie-page-palette", async (importOriginal) => {
   return { ...actual, extractMoviePagePalette: h.extract };
 });
 
-import { getMoviePageVisuals, getSyncedMoviePageVisuals } from "@/lib/movie-page-visuals";
+import { getMoviePageVisuals, getMoviePagePalettes, getSyncedMoviePageVisuals } from "@/lib/movie-page-visuals";
 import type { Movie } from "@/lib/whererat";
 
 const P = { wash: "#fff9eb", columnWash: "#fffdf6", accent: "#ea580c", heroBloom: "#2b1a10" };
@@ -231,5 +231,71 @@ describe("getMoviePageVisuals", () => {
       movie({ metadata: { pagePalette: { wash: "AAAAAA", columnWash: " #BBBBBB ", accent: "CCCCCC", heroBloom: "DDDDDD" } } }),
     );
     expect(out.palette).toEqual({ wash: "#aaaaaa", columnWash: "#bbbbbb", accent: "#cccccc", heroBloom: "#dddddd" });
+  });
+});
+
+describe("getMoviePagePalettes (list-view fast path)", () => {
+  const manual = { wash: "#aaaaaa", columnWash: "#bbbbbb", accent: "#cccccc", heroBloom: "#dddddd" };
+  const manualDark = { wash: "#010101", columnWash: "#020202", accent: "#030303", heroBloom: "#040404" };
+
+  it("uses a sync-cached palette without any TMDB or image request", async () => {
+    const m = movie({ metadata: { syncedPalette: P, syncedPaletteDark: PD } });
+    expect(await getMoviePagePalettes(m)).toEqual({ palette: P, paletteDark: PD });
+    expect(h.backdrop).not.toHaveBeenCalled();
+    expect(h.extract).not.toHaveBeenCalled();
+  });
+
+  it("derives the dark palette when only the light one was cached", async () => {
+    const out = await getMoviePagePalettes(movie({ metadata: { syncedPalette: P } }));
+    expect(out.palette).toEqual(P);
+    expect(out.paletteDark).not.toBeNull();
+    expect(h.extract).not.toHaveBeenCalled();
+  });
+
+  it("manual palettes win over the cached one", async () => {
+    const m = movie({
+      metadata: { syncedPalette: P, syncedPaletteDark: PD, pagePalette: manual, pagePaletteDark: manualDark },
+    });
+    expect(await getMoviePagePalettes(m)).toEqual({ palette: manual, paletteDark: manualDark });
+  });
+
+  it("a manual light palette alone keeps the cached dark one", async () => {
+    const m = movie({ metadata: { syncedPalette: P, syncedPaletteDark: PD, pagePalette: manual } });
+    expect(await getMoviePagePalettes(m)).toEqual({ palette: manual, paletteDark: PD });
+  });
+
+  it("a complete manual pair needs no network even with nothing cached", async () => {
+    const m = movie({ metadata: { pagePalette: manual, pagePaletteDark: manualDark } });
+    expect(await getMoviePagePalettes(m)).toEqual({ palette: manual, paletteDark: manualDark });
+    expect(h.backdrop).not.toHaveBeenCalled();
+    expect(h.extract).not.toHaveBeenCalled();
+  });
+
+  it("falls back to full extraction when nothing is stored", async () => {
+    const out = await getMoviePagePalettes(movie());
+    expect(h.extract).toHaveBeenCalled();
+    expect(out.palette).toEqual(P);
+  });
+
+  it("a manual light palette with nothing cached still extracts the dark one (same as the full visuals)", async () => {
+    const m = movie({ metadata: { pagePalette: manual } });
+    const fast = await getMoviePagePalettes(m);
+    const full = await getMoviePageVisuals(m);
+    expect(fast).toEqual({ palette: full.palette, paletteDark: full.paletteDark });
+  });
+
+  it.each([
+    ["nothing stored", {}],
+    ["cached only", { syncedPalette: P }],
+    ["cached pair", { syncedPalette: P, syncedPaletteDark: PD }],
+    ["manual light", { pagePalette: manual }],
+    ["manual pair", { pagePalette: manual, pagePaletteDark: manualDark }],
+    ["override accent", { overrideAccent: "#ea580c" }],
+    ["override accent + cached", { overrideAccent: "#ea580c", syncedPalette: P }],
+  ])("returns exactly what getMoviePageVisuals does: %s", async (_name, metadata) => {
+    const m = movie({ metadata });
+    const fast = await getMoviePagePalettes(m);
+    const full = await getMoviePageVisuals(m);
+    expect(fast).toEqual({ palette: full.palette, paletteDark: full.paletteDark });
   });
 });

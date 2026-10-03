@@ -52,6 +52,14 @@ function requireDatabaseUrl() {
   return url;
 }
 
+/** Connections per server instance. A handful covers a page's parallel reads; raise via PG_POOL_MAX. */
+const DEFAULT_POOL_MAX = 10;
+
+function poolMax(): number {
+  const n = Number.parseInt(process.env.PG_POOL_MAX ?? "", 10);
+  return Number.isFinite(n) && n >= 1 ? n : DEFAULT_POOL_MAX;
+}
+
 export function getDbPool() {
   if (!sharedPool) {
     sharedPool = new Pool({
@@ -60,6 +68,13 @@ export function getDbPool() {
         process.env.NODE_ENV === "production"
           ? { rejectUnauthorized: false }
           : undefined,
+      max: poolMax(),
+      // pg waits forever for a connection by default, so a stuck connect hangs the request.
+      // Fail fast instead; Neon cold starts finish well inside this.
+      connectionTimeoutMillis: 10_000,
+      // Release idle connections before the server/pooler drops them out from under us.
+      idleTimeoutMillis: 30_000,
+      keepAlive: true,
     });
   }
   return sharedPool;

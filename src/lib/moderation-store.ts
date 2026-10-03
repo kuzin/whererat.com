@@ -13,8 +13,14 @@ import { getDeletedSightingIds, getSightingOverrides } from "@/lib/sighting-edit
 import {
   ensureCommunityMovieForSubmission,
 } from "@/lib/community-movie-store";
-import { findCatalogMovieForSubmission } from "@/lib/movie-catalog";
+import {
+  buildCatalogLookup,
+  findCatalogMovieForSubmission,
+  getCatalogIdentities,
+  resolveMovieForSubmission,
+} from "@/lib/movie-catalog";
 import { getDbPool, withTransaction } from "@/lib/db";
+import { invalidateCatalogCache } from "@/lib/catalog-cache";
 import { isReviewDecision, type ReviewDecision } from "@/lib/review-decision";
 import { parseReleaseYear, parseSeasonOrEpisode } from "@/lib/submission-input";
 
@@ -254,37 +260,10 @@ async function ensureSeedModerationStore() {
   seededFromFixtures = true;
 }
 
-export async function readModerationStore() {
-  await ensureSeedModerationStore();
-  const pool = getDbPool();
-  const [submissionRows, reviewRows] = await Promise.all([
-    pool.query<{
-      id: string;
-      movie_title: string;
-      movie_year: number | null;
-      imdb_id: string | null;
-      imdb_kind: "movie" | "series" | null;
-      season_number: number | null;
-      episode_number: number | null;
-      episode_title: string | null;
-      timestamp_code: string;
-      title: string | null;
-      description: string;
-      spoiler: boolean;
-      approximate_rat_count: number;
-      status: Submission["status"];
-      submitted_by: string;
-      submitter_email: string | null;
-      curator_note: string | null;
-      duplicate_hint: string | null;
-      movie_poster_url: string | null;
-      images_json: unknown;
-      content_warnings: string[] | null;
-      rodent_types: string[] | null;
-      other_rodent_label: string | null;
-      created_at: string;
-    }>(
-      `select s.*,
+type SubmissionQueryRow = Parameters<typeof toDbSubmission>[0];
+
+/** Submission rows with their image carousel folded into `images_json`. */
+const SUBMISSIONS_WITH_IMAGES_SQL = `select s.*,
               (
                 select json_agg(json_build_object(
                   'url', si.image_url,
@@ -296,9 +275,14 @@ export async function readModerationStore() {
                 from submission_images si
                 where si.submission_id = s.id
               ) as images_json
-       from submissions s
-       order by s.id asc`,
-    ),
+       from submissions s`;
+
+export async function readModerationStore() {
+  await ensureSeedModerationStore();
+  const pool = getDbPool();
+  const [submissionRows, reviewRows] = await Promise.all([
+    pool.query<SubmissionQueryRow>(`${SUBMISSIONS_WITH_IMAGES_SQL}
+       order by s.id asc`),
     pool.query<{
       id: string;
       submission_id: string;
@@ -321,12 +305,63 @@ export async function readModerationStore() {
   };
 }
 
+const APPROVAL_ACTIONS: ReadonlySet<ReviewAction["action"]> = new Set([
+  "approved",
+  "edited and approved",
+]);
+
+/**
+ * Just what the public views need from the queue: approved submissions (with images) and
+ * when each was last approved. Skips the pending/rejected backlog and the full audit log
+ * that `readModerationStore` loads for the moderation screen.
+ */
+async function readApprovedSubmissions(): Promise<{
+  submissions: Submission[];
+  approvedAt: Map<string, string>;
+}> {
+  await ensureSeedModerationStore();
+  const pool = getDbPool();
+  const [submissionRows, reviewRows] = await Promise.all([
+    pool.query<SubmissionQueryRow>(`${SUBMISSIONS_WITH_IMAGES_SQL}
+       where s.status = 'approved'
+       order by s.id asc`),
+    pool.query<{
+      submission_id: string;
+      action: ReviewAction["action"];
+      reviewed_at: string;
+    }>(
+      `select submission_id, action, reviewed_at
+       from review_actions
+       where action = any($1::text[])`,
+      [[...APPROVAL_ACTIONS]],
+    ),
+  ]);
+  const approvedAt = new Map<string, string>();
+  for (const row of reviewRows.rows) {
+    if (!APPROVAL_ACTIONS.has(row.action)) continue;
+    const current = approvedAt.get(row.submission_id);
+    if (current === undefined || new Date(row.reviewed_at).getTime() > new Date(current).getTime()) {
+      approvedAt.set(row.submission_id, row.reviewed_at);
+    }
+  }
+  return {
+    submissions: submissionRows.rows
+      .map(toDbSubmission)
+      .map(normalizeSubmission)
+      .filter((submission) => submission.status === "approved"),
+    approvedAt,
+  };
+}
+
 /** Sum `approximateRatCount` across moderator-approved submissions in the queue store */
 export async function getApprovedSubmissionRatTally(): Promise<number> {
-  const { submissions } = await readModerationStore();
-  return submissions
-    .filter((s) => s.status === "approved")
-    .reduce((sum, s) => sum + s.approximateRatCount, 0);
+  await ensureSeedModerationStore();
+  const result = await getDbPool().query<{ total: string | null }>(
+    `select coalesce(sum(approximate_rat_count), 0)::text as total
+     from submissions
+     where status = 'approved'`,
+  );
+  return Number(result.rows[0]?.total ?? "0") || 0;
 }
 
 export async function addSubmission(
@@ -397,35 +432,62 @@ export async function addSubmission(
   return nextSubmission;
 }
 
-function submissionApprovalTimestamp(
-  reviewActions: ReviewAction[],
-  submissionId: string,
-): string | undefined {
-  const approvals = reviewActions.filter(
-    (r) =>
-      r.submissionId === submissionId &&
-      (r.action === "approved" || r.action === "edited and approved"),
-  );
-  if (approvals.length === 0) return undefined;
-  return approvals.reduce((latest, r) =>
-    new Date(r.reviewedAt).getTime() > new Date(latest.reviewedAt).getTime()
-      ? r
-      : latest,
-  ).reviewedAt;
+type BaseSightingRow = {
+  id: string;
+  movie_id: string;
+  timestamp_code: string;
+  title: string | null;
+  description: string;
+  prominence: Sighting["prominence"];
+  scene_type: Sighting["sceneType"];
+  spoiler: boolean;
+  confidence: Sighting["confidence"];
+  verification_state: Sighting["verificationState"];
+  verified_by: string;
+  source_ids: string[];
+  curator_note: string | null;
+  approximate_rat_count: number | null;
+  submitter_name: string | null;
+  submission_reviewed_at: string | null;
+  content_warnings: string[] | null;
+  rodent_types: string[] | null;
+  other_rodent_label: string | null;
+};
+
+function toBaseSighting(row: BaseSightingRow): Sighting {
+  return {
+    id: row.id,
+    movieId: row.movie_id,
+    timestamp: row.timestamp_code,
+    title: row.title ?? undefined,
+    description: row.description,
+    prominence: row.prominence,
+    sceneType: row.scene_type,
+    spoiler: row.spoiler,
+    confidence: row.confidence,
+    verificationState: row.verification_state,
+    verifiedBy: row.verified_by,
+    sourceIds: row.source_ids,
+    curatorNote: row.curator_note ?? undefined,
+    approximateRatCount: row.approximate_rat_count ?? undefined,
+    submitterName: row.submitter_name ?? undefined,
+    submissionReviewedAtISO: row.submission_reviewed_at ?? undefined,
+    contentWarnings: (row.content_warnings?.length ? row.content_warnings : undefined),
+    rodentTypes: (row.rodent_types?.length ? row.rodent_types : undefined),
+    otherRodentLabel: row.other_rodent_label?.trim() || undefined,
+  };
 }
 
-async function submissionToSyntheticSighting(
+function toSyntheticSighting(
   submission: Submission,
-  expectedMovieId: string,
+  movieId: string,
   reviewedAtISO: string,
-): Promise<Sighting | undefined> {
-  const movie = await findCatalogMovieForSubmission(submission);
-  if (!movie || movie.id !== expectedMovieId) return undefined;
+): Sighting {
   const name = submission.submittedBy.trim();
   const headline = getSubmissionSightingTitle(submission);
   return {
     id: `queue-${submission.id}`,
-    movieId: movie.id,
+    movieId,
     timestamp: submission.timestamp,
     title: headline,
     description: submission.description,
@@ -454,8 +516,69 @@ async function submissionToSyntheticSighting(
 }
 
 /**
- * Static catalog sightings plus approved-queue rows resolved to catalog movies (by IMDb id or title).
+ * Everything the public sighting views are built from, read once: base `sightings` rows,
+ * approved queue submissions (+ approval times), per-sighting overrides, soft-deleted ids,
+ * and a catalog index to resolve each submission to its movie.
+ *
+ * Pass `movieId` to read base rows for just that movie (the submissions are still all
+ * needed, to find which ones resolve to it).
  */
+async function loadSightingSources(movieId?: string) {
+  const pool = getDbPool();
+  const [approved, baseRows, overrides, deleted, identities] = await Promise.all([
+    readApprovedSubmissions(),
+    movieId === undefined
+      ? pool.query<BaseSightingRow>(`select * from sightings where is_deleted = false`)
+      : pool.query<BaseSightingRow>(
+          `select *
+           from sightings
+           where movie_id = $1 and is_deleted = false`,
+          [movieId],
+        ),
+    getSightingOverrides(),
+    getDeletedSightingIds(),
+    getCatalogIdentities(),
+  ]);
+  return {
+    approved,
+    base: baseRows.rows.map(toBaseSighting),
+    overrides,
+    deleted,
+    lookup: buildCatalogLookup(identities),
+  };
+}
+
+type SightingSources = Awaited<ReturnType<typeof loadSightingSources>>;
+
+/**
+ * Static catalog sightings plus approved-queue rows resolved to catalog movies (by IMDb id
+ * or title), with overrides applied and soft-deleted rows removed — grouped by movie.
+ * Per movie, base sightings come first, then queue sightings in submission-id order.
+ */
+function mergeSightings(
+  { approved, base, overrides, deleted, lookup }: SightingSources,
+  onlyMovieId?: string,
+): Map<string, Sighting[]> {
+  const byMovie = new Map<string, Sighting[]>();
+  const add = (sighting: Sighting) => {
+    if (deleted.has(sighting.id)) return;
+    const list = byMovie.get(sighting.movieId) ?? [];
+    list.push({ ...sighting, ...(overrides[sighting.id] ?? {}) });
+    byMovie.set(sighting.movieId, list);
+  };
+
+  for (const sighting of base) {
+    if (onlyMovieId === undefined || sighting.movieId === onlyMovieId) add(sighting);
+  }
+  for (const submission of approved.submissions) {
+    const movie = resolveMovieForSubmission(submission, lookup);
+    if (!movie || (onlyMovieId !== undefined && movie.id !== onlyMovieId)) continue;
+    const reviewedAt = approved.approvedAt.get(submission.id) ?? new Date(0).toISOString();
+    add(toSyntheticSighting(submission, movie.id, reviewedAt));
+  }
+  return byMovie;
+}
+
 /**
  * Effective rodent types per movie, over the same merged view the movie pages
  * render: base `sightings` rows plus approved submissions, with sighting
@@ -466,41 +589,23 @@ async function submissionToSyntheticSighting(
  * approved submission — so the filter matched nothing for every rodent type.
  */
 export async function getRodentTypesByMovieId(): Promise<Map<string, Set<string>>> {
-  const pool = getDbPool();
-  const [{ submissions: storedSubs }, baseRows, sightingOverrides, deletedSightingIds] =
-    await Promise.all([
-      readModerationStore(),
-      pool.query<{ id: string; movie_id: string; rodent_types: string[] | null }>(
-        `select id, movie_id, rodent_types from sightings where is_deleted = false`,
-      ),
-      getSightingOverrides(),
-      getDeletedSightingIds(),
-    ]);
+  return rodentTypesFromMerged(await getMergedSightingsByMovie());
+}
 
+/** Rodent types per movie, derived from already-merged sightings. */
+export function rodentTypesFromMerged(
+  merged: ReadonlyMap<string, readonly Sighting[]>,
+): Map<string, Set<string>> {
   const byMovie = new Map<string, Set<string>>();
-  const add = (movieId: string, sightingId: string, rodentTypes?: string[]) => {
-    if (deletedSightingIds.has(sightingId)) return;
-    const overridden = sightingOverrides[sightingId]?.rodentTypes;
-    const effective = overridden?.length ? overridden : rodentTypes;
-    // Sightings with no explicit types render as rats, so match the "rat" filter.
-    const types = effective?.length ? effective : ["rat"];
-    const set = byMovie.get(movieId) ?? new Set<string>();
-    for (const type of types) set.add(type);
-    byMovie.set(movieId, set);
-  };
-
-  for (const row of baseRows.rows) {
-    add(row.movie_id, row.id, row.rodent_types ?? undefined);
+  for (const [movieId, sightings] of merged) {
+    const set = new Set<string>();
+    for (const sighting of sightings) {
+      // Sightings with no explicit types render as rats, so match the "rat" filter.
+      const types = sighting.rodentTypes?.length ? sighting.rodentTypes : ["rat"];
+      for (const type of types) set.add(type);
+    }
+    if (set.size > 0) byMovie.set(movieId, set);
   }
-
-  // Mirrors submissionToSyntheticSighting's movie resolution (IMDb id, then title).
-  for (const submission of storedSubs) {
-    if (submission.status !== "approved") continue;
-    const movie = await findCatalogMovieForSubmission(submission);
-    if (!movie) continue;
-    add(movie.id, `queue-${submission.id}`, submission.rodentTypes);
-  }
-
   return byMovie;
 }
 
@@ -514,83 +619,13 @@ export async function getMovieIdsWithRodentType(rodentType: string): Promise<Set
   return ids;
 }
 
+/** Visible sightings for every movie in one pass (6 queries total, however many movies). */
+export async function getMergedSightingsByMovie(): Promise<Map<string, Sighting[]>> {
+  return mergeSightings(await loadSightingSources());
+}
+
 export async function getMergedSightingsForMovie(movieId: string): Promise<Sighting[]> {
-  const pool = getDbPool();
-  const [
-    { submissions: storedSubs, reviewActions },
-    baseRows,
-    sightingOverrides,
-    deletedSightingIds,
-  ] =
-    await Promise.all([
-      readModerationStore(),
-      pool.query<{
-        id: string;
-        movie_id: string;
-        timestamp_code: string;
-        title: string | null;
-        description: string;
-        prominence: Sighting["prominence"];
-        scene_type: Sighting["sceneType"];
-        spoiler: boolean;
-        confidence: Sighting["confidence"];
-        verification_state: Sighting["verificationState"];
-        verified_by: string;
-        source_ids: string[];
-        curator_note: string | null;
-        approximate_rat_count: number | null;
-        submitter_name: string | null;
-        submission_reviewed_at: string | null;
-        content_warnings: string[] | null;
-        rodent_types: string[] | null;
-        other_rodent_label: string | null;
-      }>(
-        `select *
-         from sightings
-         where movie_id = $1 and is_deleted = false`,
-        [movieId],
-      ),
-      getSightingOverrides(),
-      getDeletedSightingIds(),
-    ]);
-  const base: Sighting[] = baseRows.rows.map((row) => ({
-    id: row.id,
-    movieId: row.movie_id,
-    timestamp: row.timestamp_code,
-    title: row.title ?? undefined,
-    description: row.description,
-    prominence: row.prominence,
-    sceneType: row.scene_type,
-    spoiler: row.spoiler,
-    confidence: row.confidence,
-    verificationState: row.verification_state,
-    verifiedBy: row.verified_by,
-    sourceIds: row.source_ids,
-    curatorNote: row.curator_note ?? undefined,
-    approximateRatCount: row.approximate_rat_count ?? undefined,
-    submitterName: row.submitter_name ?? undefined,
-    submissionReviewedAtISO: row.submission_reviewed_at ?? undefined,
-    contentWarnings: (row.content_warnings?.length ? row.content_warnings : undefined),
-    rodentTypes: (row.rodent_types?.length ? row.rodent_types : undefined),
-    otherRodentLabel: row.other_rodent_label?.trim() || undefined,
-  }));
-
-  const queueCandidates = storedSubs.filter((s) => s.status === "approved");
-  const fromQueueResolved = await Promise.all(
-    queueCandidates.map(async (s) => {
-      const reviewedAt =
-        submissionApprovalTimestamp(reviewActions, s.id) ?? new Date(0).toISOString();
-      return submissionToSyntheticSighting(s, movieId, reviewedAt);
-    }),
-  );
-  const fromQueue = fromQueueResolved.filter((item): item is Sighting => Boolean(item));
-
-  return [...base, ...fromQueue]
-    .filter((sighting) => !deletedSightingIds.has(sighting.id))
-    .map((sighting) => ({
-      ...sighting,
-      ...(sightingOverrides[sighting.id] ?? {}),
-    }));
+  return mergeSightings(await loadSightingSources(movieId), movieId).get(movieId) ?? [];
 }
 
 export async function reviewSubmission({
@@ -753,6 +788,9 @@ export async function reviewSubmission({
     );
   });
 
+  // Approvals add/change public sightings and counts; rejections/edits can remove or alter them.
+  invalidateCatalogCache();
+
   if (decision === "approved" || decision === "edited and approved" || decision === "rejected") {
     const emailDecision = decision === "rejected" ? "rejected" : "approved";
     notifySubmitterOfDecision(reviewedSubmission, emailDecision).catch(() => {});
@@ -762,4 +800,5 @@ export async function reviewSubmission({
 export async function deleteSubmissionById(submissionId: string) {
   const pool = getDbPool();
   await pool.query(`delete from submissions where id = $1`, [submissionId]);
+  invalidateCatalogCache();
 }
