@@ -21,7 +21,18 @@ import {
 } from "@/lib/media-storage";
 import { notifyOwnerOfNewSubmission } from "@/lib/moderation-notify";
 import { notifySubmitterOfReceipt } from "@/lib/submitter-notify";
-import { upsertMarketingOptIn } from "@/lib/email-preferences-store";
+import { consumeSharedRateLimit } from "@/lib/rate-limit-store";
+import {
+  SUBMISSION_LIMITS,
+  cleanContentWarnings,
+  cleanRodentTypes,
+  cleanText,
+  isOwnStorageUrl,
+  isValidTimestamp,
+  parseReleaseYear,
+  parseSeasonOrEpisode,
+  sanitizePosterUrl,
+} from "@/lib/submission-input";
 
 const MAX_SIGHTING_UPLOAD_BYTES = 8 * 1024 * 1024;
 
@@ -43,6 +54,8 @@ async function persistSightingUploadsFromForm(formData: FormData): Promise<Sight
   if (formData.get(SIGHTING_GALLERY_SENTINEL)) {
     return parseSightingImageGalleryForm(formData, SIGHTING_GALLERY_FIELD_NAMES, {
       maxBytes: MAX_SIGHTING_UPLOAD_BYTES,
+      // Visitors only ever send files; a pre-existing URL must be one we stored.
+      allowPersistedUrl: isOwnStorageUrl,
     });
   }
   // Legacy multi-file payload (still used by the native API client)
@@ -53,9 +66,43 @@ async function persistSightingUploadsFromForm(formData: FormData): Promise<Sight
   return persistSightingFiles(capped, MAX_SIGHTING_UPLOAD_BYTES);
 }
 
+/** Side effects after the row is saved (emails, opt-in) must never change the response. */
+function fireAndForget(task: () => unknown): void {
+  void (async () => {
+    try {
+      await task();
+    } catch (e) {
+      console.error("[public-sighting-submit] background task failed:", e);
+    }
+  })();
+}
+
+/**
+ * One client, one bucket: lowercase, collapse IPv6 spellings ("::1" vs
+ * "0:0:0:0:0:0:0:1") and unwrap IPv4-mapped addresses ("::ffff:1.2.3.4").
+ */
+function canonicalizeClientIp(raw: string): string {
+  const trimmed = raw.trim().toLowerCase();
+  if (!trimmed) return "unknown";
+  if (!trimmed.includes(":")) return trimmed;
+  try {
+    const host = new URL(`http://[${trimmed}]`).hostname.slice(1, -1);
+    const mapped = host.match(/^::ffff:(?:(\d+\.\d+\.\d+\.\d+)|([0-9a-f]{1,4}):([0-9a-f]{1,4}))$/);
+    if (mapped?.[1]) return mapped[1];
+    if (mapped?.[2] && mapped[3]) {
+      const hi = Number.parseInt(mapped[2], 16);
+      const lo = Number.parseInt(mapped[3], 16);
+      return `${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`;
+    }
+    return host;
+  } catch {
+    return trimmed;
+  }
+}
+
 /** @returns true if this IP should be blocked (already at limit before increment semantics). */
 export function isPublicSubmissionRateLimited(clientIp: string): boolean {
-  const ip = clientIp.trim() || "unknown";
+  const ip = canonicalizeClientIp(clientIp);
   const now = Date.now();
   const entry = _rateLimitMap.get(ip);
   if (!entry || entry.resetAt <= now) {
@@ -67,6 +114,19 @@ export function isPublicSubmissionRateLimited(clientIp: string): boolean {
   }
   entry.count++;
   return false;
+}
+
+/**
+ * Shared (Postgres) limit first so it holds across serverless instances; the
+ * per-instance limiter is the fallback when the shared store isn't available.
+ */
+async function isRateLimited(clientIp: string): Promise<boolean> {
+  const shared = await consumeSharedRateLimit({
+    key: `submit:${canonicalizeClientIp(clientIp)}`,
+    max: RATE_LIMIT_MAX,
+    windowMs: RATE_LIMIT_WINDOW_MS,
+  });
+  return shared ?? isPublicSubmissionRateLimited(clientIp);
 }
 
 export type PublicSightingSubmitFailureCode =
@@ -97,41 +157,48 @@ export async function executePublicSightingSubmit(
   options?: { skipModerationNotify?: boolean },
 ): Promise<PublicSightingSubmitResult> {
   try {
-    if (isPublicSubmissionRateLimited(clientIp)) {
+    if (await isRateLimited(clientIp)) {
       return { ok: false, code: "rate-limited" };
     }
 
-    const selectedMovieTitle = String(formData.get("movieTitle") ?? "").trim();
-    const movieTitle = selectedMovieTitle;
-    const imdbId = normalizeImdbId(String(formData.get("imdbId") ?? ""));
-    const movieYear = Number(formData.get("movieYear") || "");
-    const imdbKindRaw = String(formData.get("imdbKind") ?? "").trim().toLowerCase();
+    const movieTitle = cleanText(formData.get("movieTitle"), SUBMISSION_LIMITS.movieTitle);
+    const imdbId = normalizeImdbId(cleanText(formData.get("imdbId"), 200));
+    const movieYear = parseReleaseYear(formData.get("movieYear"));
+    const imdbKindRaw = cleanText(formData.get("imdbKind"), 16).toLowerCase();
     const imdbKind = imdbKindRaw === "series" ? "series" : "movie";
-    const seasonNumberRaw = Number.parseInt(String(formData.get("seasonNumber") ?? "").trim(), 10);
-    const episodeNumberRaw = Number.parseInt(String(formData.get("episodeNumber") ?? "").trim(), 10);
-    const episodeTitle = String(formData.get("episodeTitle") ?? "").trim();
-    const moviePosterUrl = String(formData.get("moviePosterUrl") || "").trim();
-    const sightingTitle = String(formData.get("sightingTitle") ?? "").trim();
-    const timestamp = normalizeSightingTimestampInput(String(formData.get("timestamp") ?? ""));
-    const description = String(formData.get("description") ?? "").trim();
-    const submitterName = String(formData.get("submitterName") ?? "").trim();
+    const seasonNumber =
+      imdbKind === "series" ? parseSeasonOrEpisode(formData.get("seasonNumber")) : undefined;
+    const episodeNumber =
+      imdbKind === "series" ? parseSeasonOrEpisode(formData.get("episodeNumber")) : undefined;
+    const episodeTitle =
+      imdbKind === "series"
+        ? cleanText(formData.get("episodeTitle"), SUBMISSION_LIMITS.episodeTitle)
+        : "";
+    const moviePosterUrl = sanitizePosterUrl(formData.get("moviePosterUrl"));
+    const sightingTitle = cleanText(formData.get("sightingTitle"), SUBMISSION_LIMITS.sightingTitle);
+    const rawTimestamp = cleanText(formData.get("timestamp"), SUBMISSION_LIMITS.timestamp);
+    const timestamp = normalizeSightingTimestampInput(rawTimestamp);
+    const description = cleanText(formData.get("description"), SUBMISSION_LIMITS.description);
+    const submitterName = cleanText(formData.get("submitterName"), SUBMISSION_LIMITS.submitterName);
     const submitterEmail = normalizeOptionalSubmitterEmail(formData.get("submitterEmail"));
     const spoiler = formData.get("spoiler") === "on";
     const approximateRatCount = clampApproximateRatCount(formData.get("approximateRatCount"));
-    const contentWarnings = formData.getAll("contentWarnings")
-      .map((v) => String(v).trim())
-      .filter(Boolean);
-    const rodentTypes = formData.getAll("rodentTypes")
-      .map((v) => String(v).trim())
-      .filter(Boolean);
-    const otherRodentLabel = String(formData.get("otherRodentLabel") ?? "")
-      .trim()
-      .slice(0, MAX_OTHER_RODENT_LABEL_LENGTH);
-    const otherWarning = String(formData.get("contentWarningOther") ?? "").trim().slice(0, 200);
-    if (otherWarning) contentWarnings.push(otherWarning);
+    const otherWarning = cleanText(formData.get("contentWarningOther"), SUBMISSION_LIMITS.contentWarning);
+    const contentWarnings = cleanContentWarnings([
+      ...formData.getAll("contentWarnings"),
+      ...(otherWarning ? [otherWarning] : []),
+    ]);
+    const rodentTypes = cleanRodentTypes(formData.getAll("rodentTypes"));
+    const otherRodentLabel = cleanText(
+      formData.get("otherRodentLabel"),
+      MAX_OTHER_RODENT_LABEL_LENGTH,
+    );
 
     if (!movieTitle || !sightingTitle || !timestamp || !description || !submitterName) {
       return { ok: false, code: "missing" };
+    }
+    if (!isValidTimestamp(timestamp)) {
+      return { ok: false, code: "missing", message: "Enter when the rat appears." };
     }
 
     if (rodentTypes.includes(OTHER_RODENT_ID) && !otherRodentLabel) {
@@ -145,14 +212,6 @@ export async function executePublicSightingSubmit(
     if (!imdbId) {
       return { ok: false, code: "no-imdb" };
     }
-    const seasonNumber =
-      imdbKind === "series" && Number.isFinite(seasonNumberRaw) && seasonNumberRaw >= 1
-        ? seasonNumberRaw
-        : undefined;
-    const episodeNumber =
-      imdbKind === "series" && Number.isFinite(episodeNumberRaw) && episodeNumberRaw >= 1
-        ? episodeNumberRaw
-        : undefined;
     if (imdbKind === "series" && (!seasonNumber || !episodeNumber)) {
       return { ok: false, code: "missing", message: "Season and episode are required for shows." };
     }
@@ -164,7 +223,7 @@ export async function executePublicSightingSubmit(
 
     const submissionRow = await addSubmission({
       movieTitle,
-      movieYear: Number.isFinite(movieYear) ? movieYear : undefined,
+      movieYear,
       imdbId: imdbId || undefined,
       imdbKind,
       seasonNumber,
@@ -182,7 +241,7 @@ export async function executePublicSightingSubmit(
         : imdbId
           ? "No existing catalog match found."
           : "No existing catalog match found.",
-      moviePosterUrl: moviePosterUrl || existingMovie?.posterUrl || undefined,
+      moviePosterUrl: moviePosterUrl ?? sanitizePosterUrl(existingMovie?.posterUrl),
       images: sightingImages.length ? sightingImages : undefined,
       imageUrl: firstImage?.url,
       imageAlt: firstImage?.alt,
@@ -195,14 +254,14 @@ export async function executePublicSightingSubmit(
     });
 
     if (!options?.skipModerationNotify) {
-      void notifyOwnerOfNewSubmission(submissionRow, existingMovie?.slug);
+      fireAndForget(() => notifyOwnerOfNewSubmission(submissionRow, existingMovie?.slug));
     }
-    void notifySubmitterOfReceipt(submissionRow);
-
+    // Ticking the opt-in box only asks us to *offer* the subscription: the receipt
+    // e-mail carries a confirm link, and nothing is stored until it's clicked.
     const marketingOptIn = formData.get("marketingOptIn") === "on";
-    if (submitterEmail && marketingOptIn) {
-      void upsertMarketingOptIn(submitterEmail).catch(() => { });
-    }
+    fireAndForget(() =>
+      notifySubmitterOfReceipt(submissionRow, { offerNewsOptIn: Boolean(submitterEmail) && marketingOptIn }),
+    );
 
     return {
       ok: true,
@@ -210,7 +269,12 @@ export async function executePublicSightingSubmit(
       catalogMatchSlug: existingMovie?.slug,
     };
   } catch (e) {
-    const message = e instanceof Error ? e.message : "Unknown error";
-    return { ok: false, code: "server-error", message };
+    // Driver errors carry hostnames and table/column names; keep them in the logs.
+    console.error("[public-sighting-submit] failed:", e);
+    return {
+      ok: false,
+      code: "server-error",
+      message: "We couldn't save your submission. Please try again.",
+    };
   }
 }

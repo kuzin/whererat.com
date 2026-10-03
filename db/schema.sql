@@ -243,3 +243,13 @@ create table if not exists email_preferences (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
+
+-- Shared rate-limit counters (one row per key; fixed window). Used by public
+-- submissions so limits hold across serverless instances. The app falls back to
+-- per-instance in-memory limits until this table exists.
+create table if not exists rate_limits (
+  key text primary key,
+  count int not null,
+  reset_at timestamptz not null
+);
+create index if not exists rate_limits_reset_idx on rate_limits(reset_at);

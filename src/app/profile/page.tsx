@@ -4,8 +4,8 @@ import { redirect } from "next/navigation";
 import type { Metadata } from "next";
 import {
   MODERATOR_SESSION_COOKIE,
-  parseModeratorSession,
 } from "@/lib/auth";
+import { verifyModeratorSession } from "@/lib/moderator-session";
 import { getStoredModeratorById } from "@/lib/user-store";
 import { updatePassword, updateProfile } from "./actions";
 import { AvatarUploadField } from "@/components/forms/avatar-upload-field";
@@ -27,7 +27,7 @@ export default async function ProfilePage({
   searchParams?: SearchParams;
 }) {
   const cookieStore = await cookies();
-  const session = parseModeratorSession(
+  const session = await verifyModeratorSession(
     cookieStore.get(MODERATOR_SESSION_COOKIE)?.value,
   );
 

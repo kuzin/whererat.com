@@ -14,9 +14,10 @@ import {
   ensureCommunityMovieForSubmission,
 } from "@/lib/community-movie-store";
 import { findCatalogMovieForSubmission } from "@/lib/movie-catalog";
-import { getDbPool } from "@/lib/db";
+import { getDbPool, withTransaction } from "@/lib/db";
+import { isReviewDecision, type ReviewDecision } from "@/lib/review-decision";
+import { parseReleaseYear, parseSeasonOrEpisode } from "@/lib/submission-input";
 
-type ReviewDecision = "approved" | "edited" | "edited and approved" | "rejected";
 type SubmissionEdits = Partial<
   Pick<
     Submission,
@@ -330,58 +331,66 @@ export async function addSubmission(
   submission: Omit<Submission, "id" | "status" | "submittedAt">,
 ) {
   await ensureSeedModerationStore();
-  const pool = getDbPool();
   const nextSubmission: Submission = {
     ...submission,
+    // Out-of-range numbers would surface as raw Postgres errors (int4 / check constraints).
+    movieYear:
+      submission.movieYear === undefined ? undefined : parseReleaseYear(String(submission.movieYear)),
+    seasonNumber:
+      submission.seasonNumber === undefined ? undefined : parseSeasonOrEpisode(String(submission.seasonNumber)),
+    episodeNumber:
+      submission.episodeNumber === undefined ? undefined : parseSeasonOrEpisode(String(submission.episodeNumber)),
     id: `sub-${crypto.randomUUID()}`,
     status: "pending",
     submittedAt: new Date(),
     approximateRatCount: clampApproximateRatCount(submission.approximateRatCount),
   };
-  await pool.query(
-    `insert into submissions
-      (id, movie_title, movie_year, imdb_id, imdb_kind, season_number, episode_number, episode_title, timestamp_code, title, description, spoiler, approximate_rat_count, status, submitted_by, submitter_email, curator_note, duplicate_hint, movie_poster_url, content_warnings, rodent_types, other_rodent_label)
-     values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`,
-    [
-      nextSubmission.id,
-      nextSubmission.movieTitle,
-      nextSubmission.movieYear ?? null,
-      nextSubmission.imdbId ?? null,
-      nextSubmission.imdbKind ?? "movie",
-      nextSubmission.seasonNumber ?? null,
-      nextSubmission.episodeNumber ?? null,
-      nextSubmission.episodeTitle ?? null,
-      nextSubmission.timestamp,
-      nextSubmission.title ?? null,
-      nextSubmission.description,
-      nextSubmission.spoiler,
-      nextSubmission.approximateRatCount,
-      nextSubmission.status,
-      nextSubmission.submittedBy,
-      nextSubmission.submitterEmail ?? null,
-      nextSubmission.curatorNote ?? null,
-      nextSubmission.duplicateHint ?? null,
-      nextSubmission.moviePosterUrl ?? null,
-      nextSubmission.contentWarnings ?? [],
-      nextSubmission.rodentTypes ?? ["rat"],
-      nextSubmission.otherRodentLabel ?? null,
-    ],
-  );
-  for (const [index, slot] of (nextSubmission.images ?? []).entries()) {
-    await pool.query(
-      `insert into submission_images (submission_id, image_url, image_alt, sort_order, image_position_x, image_position_y, image_zoom)
-       values ($1,$2,$3,$4,$5,$6,$7)`,
+  await withTransaction(async (client) => {
+    await client.query(
+      `insert into submissions
+        (id, movie_title, movie_year, imdb_id, imdb_kind, season_number, episode_number, episode_title, timestamp_code, title, description, spoiler, approximate_rat_count, status, submitted_by, submitter_email, curator_note, duplicate_hint, movie_poster_url, content_warnings, rodent_types, other_rodent_label)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`,
       [
         nextSubmission.id,
-        slot.url,
-        slot.alt ?? null,
-        index,
-        slot.positionX ?? 50,
-        slot.positionY ?? 50,
-        slot.zoom ?? 1,
+        nextSubmission.movieTitle,
+        nextSubmission.movieYear ?? null,
+        nextSubmission.imdbId ?? null,
+        nextSubmission.imdbKind ?? "movie",
+        nextSubmission.seasonNumber ?? null,
+        nextSubmission.episodeNumber ?? null,
+        nextSubmission.episodeTitle ?? null,
+        nextSubmission.timestamp,
+        nextSubmission.title ?? null,
+        nextSubmission.description,
+        nextSubmission.spoiler,
+        nextSubmission.approximateRatCount,
+        nextSubmission.status,
+        nextSubmission.submittedBy,
+        nextSubmission.submitterEmail ?? null,
+        nextSubmission.curatorNote ?? null,
+        nextSubmission.duplicateHint ?? null,
+        nextSubmission.moviePosterUrl ?? null,
+        nextSubmission.contentWarnings ?? [],
+        nextSubmission.rodentTypes ?? ["rat"],
+        nextSubmission.otherRodentLabel ?? null,
       ],
     );
-  }
+    for (const [index, slot] of (nextSubmission.images ?? []).entries()) {
+      await client.query(
+        `insert into submission_images (submission_id, image_url, image_alt, sort_order, image_position_x, image_position_y, image_zoom)
+         values ($1,$2,$3,$4,$5,$6,$7)`,
+        [
+          nextSubmission.id,
+          slot.url,
+          slot.alt ?? null,
+          index,
+          slot.positionX ?? 50,
+          slot.positionY ?? 50,
+          slot.zoom ?? 1,
+        ],
+      );
+    }
+  });
 
   return nextSubmission;
 }
@@ -595,6 +604,12 @@ export async function reviewSubmission({
   reason?: string;
   edits?: SubmissionEdits;
 }) {
+  // Anything else would fall through to "approved" below and then fail the audit-log
+  // insert, leaving an approved submission with no catalog movie.
+  if (!isReviewDecision(decision)) {
+    throw new Error(`Unknown review decision: ${String(decision).slice(0, 40)}`);
+  }
+
   const state = await readModerationStore();
   const submission = state.submissions.find((item) => item.id === submissionId);
 
@@ -649,91 +664,92 @@ export async function reviewSubmission({
     note: reviewNote,
   };
 
-  const pool = getDbPool();
-  await pool.query(
-    `update submissions
-        set movie_title = $2,
-            movie_year = $3,
-            imdb_id = $4,
-            imdb_kind = $5,
-            season_number = $6,
-            episode_number = $7,
-            episode_title = $8,
-            timestamp_code = $9,
-            title = $10,
-            description = $11,
-            spoiler = $12,
-            approximate_rat_count = $13,
-            status = $14,
-            submitted_by = $15,
-            submitter_email = $16,
-            curator_note = $17,
-            duplicate_hint = $18,
-            movie_poster_url = $19,
-            content_warnings = $20,
-            rodent_types = $21,
-            other_rodent_label = $22,
-            updated_at = now()
-      where id = $1`,
-    [
-      reviewedSubmission.id,
-      reviewedSubmission.movieTitle,
-      reviewedSubmission.movieYear ?? null,
-      reviewedSubmission.imdbId ?? null,
-      reviewedSubmission.imdbKind ?? "movie",
-      reviewedSubmission.seasonNumber ?? null,
-      reviewedSubmission.episodeNumber ?? null,
-      reviewedSubmission.episodeTitle ?? null,
-      reviewedSubmission.timestamp,
-      reviewedSubmission.title ?? null,
-      reviewedSubmission.description,
-      reviewedSubmission.spoiler,
-      reviewedSubmission.approximateRatCount,
-      reviewedSubmission.status,
-      reviewedSubmission.submittedBy,
-      reviewedSubmission.submitterEmail ?? null,
-      reviewedSubmission.curatorNote ?? null,
-      reviewedSubmission.duplicateHint ?? null,
-      reviewedSubmission.moviePosterUrl ?? null,
-      reviewedSubmission.contentWarnings ?? [],
-      reviewedSubmission.rodentTypes ?? ["rat"],
-      reviewedSubmission.otherRodentLabel ?? null,
-    ],
-  );
-  await pool.query(
-    `delete from submission_images where submission_id = $1`,
-    [reviewedSubmission.id],
-  );
-  for (const [index, slot] of (reviewedSubmission.images ?? []).entries()) {
-    await pool.query(
-      `insert into submission_images (submission_id, image_url, image_alt, sort_order, image_position_x, image_position_y, image_zoom)
-       values ($1,$2,$3,$4,$5,$6,$7)`,
+  await withTransaction(async (client) => {
+    await client.query(
+      `update submissions
+          set movie_title = $2,
+              movie_year = $3,
+              imdb_id = $4,
+              imdb_kind = $5,
+              season_number = $6,
+              episode_number = $7,
+              episode_title = $8,
+              timestamp_code = $9,
+              title = $10,
+              description = $11,
+              spoiler = $12,
+              approximate_rat_count = $13,
+              status = $14,
+              submitted_by = $15,
+              submitter_email = $16,
+              curator_note = $17,
+              duplicate_hint = $18,
+              movie_poster_url = $19,
+              content_warnings = $20,
+              rodent_types = $21,
+              other_rodent_label = $22,
+              updated_at = now()
+        where id = $1`,
       [
         reviewedSubmission.id,
-        slot.url,
-        slot.alt ?? null,
-        index,
-        slot.positionX ?? 50,
-        slot.positionY ?? 50,
-        slot.zoom ?? 1,
+        reviewedSubmission.movieTitle,
+        reviewedSubmission.movieYear ?? null,
+        reviewedSubmission.imdbId ?? null,
+        reviewedSubmission.imdbKind ?? "movie",
+        reviewedSubmission.seasonNumber ?? null,
+        reviewedSubmission.episodeNumber ?? null,
+        reviewedSubmission.episodeTitle ?? null,
+        reviewedSubmission.timestamp,
+        reviewedSubmission.title ?? null,
+        reviewedSubmission.description,
+        reviewedSubmission.spoiler,
+        reviewedSubmission.approximateRatCount,
+        reviewedSubmission.status,
+        reviewedSubmission.submittedBy,
+        reviewedSubmission.submitterEmail ?? null,
+        reviewedSubmission.curatorNote ?? null,
+        reviewedSubmission.duplicateHint ?? null,
+        reviewedSubmission.moviePosterUrl ?? null,
+        reviewedSubmission.contentWarnings ?? [],
+        reviewedSubmission.rodentTypes ?? ["rat"],
+        reviewedSubmission.otherRodentLabel ?? null,
       ],
     );
-  }
-  await pool.query(
-    `insert into review_actions
-      (id, submission_id, movie_title, action, moderator_id, moderator_name, reviewed_at, note)
-     values ($1,$2,$3,$4,$5,$6,$7,$8)`,
-    [
-      nextReviewAction.id,
-      nextReviewAction.submissionId,
-      nextReviewAction.movieTitle,
-      nextReviewAction.action,
-      nextReviewAction.moderatorId,
-      nextReviewAction.moderatorName,
-      nextReviewAction.reviewedAt,
-      nextReviewAction.note,
-    ],
-  );
+    await client.query(
+      `delete from submission_images where submission_id = $1`,
+      [reviewedSubmission.id],
+    );
+    for (const [index, slot] of (reviewedSubmission.images ?? []).entries()) {
+      await client.query(
+        `insert into submission_images (submission_id, image_url, image_alt, sort_order, image_position_x, image_position_y, image_zoom)
+         values ($1,$2,$3,$4,$5,$6,$7)`,
+        [
+          reviewedSubmission.id,
+          slot.url,
+          slot.alt ?? null,
+          index,
+          slot.positionX ?? 50,
+          slot.positionY ?? 50,
+          slot.zoom ?? 1,
+        ],
+      );
+    }
+    await client.query(
+      `insert into review_actions
+        (id, submission_id, movie_title, action, moderator_id, moderator_name, reviewed_at, note)
+       values ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [
+        nextReviewAction.id,
+        nextReviewAction.submissionId,
+        nextReviewAction.movieTitle,
+        nextReviewAction.action,
+        nextReviewAction.moderatorId,
+        nextReviewAction.moderatorName,
+        nextReviewAction.reviewedAt,
+        nextReviewAction.note,
+      ],
+    );
+  });
 
   if (decision === "approved" || decision === "edited and approved" || decision === "rejected") {
     const emailDecision = decision === "rejected" ? "rejected" : "approved";

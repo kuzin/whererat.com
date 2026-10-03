@@ -5,10 +5,19 @@ import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import {
   MODERATOR_SESSION_COOKIE,
-  parseModeratorSession,
 } from "@/lib/auth";
+import { verifyModeratorSession } from "@/lib/moderator-session";
 import { deleteSubmissionById, reviewSubmission } from "@/lib/moderation-store";
+import { isReviewDecision } from "@/lib/review-decision";
 import { parseMovieIdentityEdits } from "@/lib/movie-identity-form";
+import {
+  SUBMISSION_LIMITS,
+  cleanContentWarnings,
+  cleanRodentTypes,
+  cleanText,
+  parseSeasonOrEpisode,
+  safeReturnTo,
+} from "@/lib/submission-input";
 import {
   clampApproximateRatCount,
   normalizeSightingTimestampInput,
@@ -30,7 +39,7 @@ const MAX_AVATAR_UPLOAD_BYTES = 8 * 1024 * 1024;
 
 async function getModeratorOrRedirect() {
   const cookieStore = await cookies();
-  const session = parseModeratorSession(
+  const session = await verifyModeratorSession(
     cookieStore.get(MODERATOR_SESSION_COOKIE)?.value,
   );
 
@@ -52,18 +61,44 @@ async function persistSightingUploads(formData: FormData): Promise<SightingImage
 export async function moderateSubmission(formData: FormData) {
   const moderator = await getModeratorOrRedirect();
   const submissionId = String(formData.get("submissionId") ?? "");
-  const decision = String(formData.get("decision") ?? "") as
-    | "approved"
-    | "edited"
-    | "edited and approved"
-    | "rejected";
-  const reason = String(formData.get("reason") ?? "").trim();
-  const curatorNote = String(formData.get("curatorNote") ?? "").trim();
-  const imdbKindRaw = String(formData.get("imdbKind") ?? "").trim().toLowerCase();
+  const decisionRaw = String(formData.get("decision") ?? "");
+  if (!submissionId || !decisionRaw) {
+    return;
+  }
+  // Only the four known decisions; anything else used to fall through to "approved".
+  if (!isReviewDecision(decisionRaw)) {
+    redirect("/moderation?toast=error");
+  }
+  const decision = decisionRaw;
+  const reason = cleanText(formData.get("reason"), 500);
+  const curatorNote = cleanText(formData.get("curatorNote"), 2_000);
+  const imdbKindRaw = cleanText(formData.get("imdbKind"), 16).toLowerCase();
   const imdbKind: ImdbTitleKind = imdbKindRaw === "series" ? "series" : "movie";
-  const seasonNumberRaw = Number.parseInt(String(formData.get("seasonNumber") ?? "").trim(), 10);
-  const episodeNumberRaw = Number.parseInt(String(formData.get("episodeNumber") ?? "").trim(), 10);
-  const episodeTitle = String(formData.get("episodeTitle") ?? "").trim();
+  const seasonNumber = parseSeasonOrEpisode(formData.get("seasonNumber"));
+  const episodeNumber = parseSeasonOrEpisode(formData.get("episodeNumber"));
+  const episodeTitle = cleanText(formData.get("episodeTitle"), SUBMISSION_LIMITS.episodeTitle);
+
+  const movieIdentity = parseMovieIdentityEdits(formData);
+  if (!movieIdentity.ok) {
+    redirect(`/moderation?toast=invalid-movie&edit=${encodeURIComponent(submissionId)}`);
+  }
+
+  const sightingTitle = cleanText(formData.get("sightingTitle"), SUBMISSION_LIMITS.sightingTitle);
+  const timestamp = normalizeSightingTimestampInput(
+    cleanText(formData.get("timestamp"), SUBMISSION_LIMITS.timestamp),
+  );
+  const description = cleanText(formData.get("description"), SUBMISSION_LIMITS.description);
+  // Only when the form carries the text fields; a bare "approve" has nothing to validate.
+  const carriesSightingText =
+    formData.has("sightingTitle") || formData.has("timestamp") || formData.has("description");
+  if (
+    decision === "edited and approved" &&
+    carriesSightingText &&
+    (!sightingTitle || !timestamp || !description)
+  ) {
+    redirect(`/moderation?toast=invalid-sighting&edit=${encodeURIComponent(submissionId)}`);
+  }
+
   const galleryManaged = Boolean(formData.get(SIGHTING_GALLERY_SENTINEL));
   const legacyListManaged = String(formData.get("imageListManaged") ?? "") === "1";
   let nextImages: SightingImageSlot[] = [];
@@ -110,20 +145,13 @@ export async function moderateSubmission(formData: FormData) {
   }
   const leadImage = nextImages[0];
 
-  if (!submissionId || !decision) {
-    return;
-  }
-
-  const contentWarnings = formData.getAll("contentWarnings").map((v) => String(v).trim()).filter(Boolean);
-  const otherWarning = String(formData.get("contentWarningOther") ?? "").trim().slice(0, 200);
-  if (otherWarning) contentWarnings.push(otherWarning);
-  const rodentTypes = formData.getAll("rodentTypes").map((v) => String(v).trim()).filter(Boolean);
-  const otherRodentLabel = String(formData.get("otherRodentLabel") ?? "").trim().slice(0, 60);
-
-  const movieIdentity = parseMovieIdentityEdits(formData);
-  if (!movieIdentity.ok) {
-    redirect(`/moderation?toast=invalid-movie&edit=${encodeURIComponent(submissionId)}`);
-  }
+  const otherWarning = cleanText(formData.get("contentWarningOther"), SUBMISSION_LIMITS.contentWarning);
+  const contentWarnings = cleanContentWarnings([
+    ...formData.getAll("contentWarnings"),
+    ...(otherWarning ? [otherWarning] : []),
+  ]);
+  const rodentTypes = cleanRodentTypes(formData.getAll("rodentTypes"));
+  const otherRodentLabel = cleanText(formData.get("otherRodentLabel"), 60);
 
   const hasEditFields =
     formData.has("sightingTitle") ||
@@ -141,21 +169,13 @@ export async function moderateSubmission(formData: FormData) {
   const edits = hasEditFields
     ? {
       ...movieIdentity.edits,
-      title: String(formData.get("sightingTitle") ?? "").trim(),
+      title: sightingTitle,
       imdbKind,
-      seasonNumber:
-        imdbKind === "series" && Number.isFinite(seasonNumberRaw) && seasonNumberRaw >= 1
-          ? seasonNumberRaw
-          : undefined,
-      episodeNumber:
-        imdbKind === "series" && Number.isFinite(episodeNumberRaw) && episodeNumberRaw >= 1
-          ? episodeNumberRaw
-          : undefined,
+      seasonNumber: imdbKind === "series" ? seasonNumber : undefined,
+      episodeNumber: imdbKind === "series" ? episodeNumber : undefined,
       episodeTitle: imdbKind === "series" ? episodeTitle || undefined : undefined,
-      timestamp: normalizeSightingTimestampInput(
-        String(formData.get("timestamp") ?? ""),
-      ),
-      description: String(formData.get("description") ?? "").trim(),
+      timestamp,
+      description,
       spoiler: formData.get("spoiler") === "on",
       approximateRatCount: clampApproximateRatCount(
         formData.get("approximateRatCount"),
@@ -219,7 +239,7 @@ export async function moderateSubmission(formData: FormData) {
 export async function removeSubmission(formData: FormData) {
   await getModeratorOrRedirect();
   const submissionId = String(formData.get("submissionId") ?? "").trim();
-  const returnTo = String(formData.get("returnTo") ?? "").trim() || "/moderation";
+  const returnTo = safeReturnTo(formData.get("returnTo"), "/moderation");
   if (!submissionId) {
     redirect(returnTo);
   }
@@ -256,7 +276,7 @@ export async function resyncAllMovies() {
 export async function rereviewSubmission(formData: FormData) {
   const moderator = await getModeratorOrRedirect();
   const submissionId = String(formData.get("submissionId") ?? "").trim();
-  const returnTo = String(formData.get("returnTo") ?? "").trim() || "/moderation";
+  const returnTo = safeReturnTo(formData.get("returnTo"), "/moderation");
   if (!submissionId) {
     redirect(returnTo);
   }

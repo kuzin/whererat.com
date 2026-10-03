@@ -11,6 +11,7 @@
 import { sendBrandedEmail } from "@/lib/email-send";
 import { renderBrandedEmail, type EmailContentBlock } from "@/lib/email-template";
 import { type Submission } from "@/lib/whererat";
+import { optInConfirmUrl } from "@/lib/opt-in-token";
 import { getSubscriber } from "@/lib/email-preferences-store";
 import { getModeratorAccounts } from "@/lib/auth";
 
@@ -36,17 +37,25 @@ function movieDisplay(submission: Submission): string {
 
 const SUBMITTER_FOOTER = "You're receiving this because you submitted a sighting to WhereRat.";
 
-async function getFooterNote(email?: string): Promise<string> {
-  if (!email) return SUBMITTER_FOOTER;
+async function getFooter(
+  email?: string,
+): Promise<{ footerNote: string; footerUnsubscribeUrl?: string }> {
+  if (!email) return { footerNote: SUBMITTER_FOOTER };
   const subscriber = await getSubscriber(email);
-  if (!subscriber) return SUBMITTER_FOOTER;
-
-  const unsubLink = `${siteUrl()}/unsubscribed?token=${subscriber.unsubscribeToken}`;
-  return `${SUBMITTER_FOOTER}<br><br><span style="font-size:11px;color:#78716c">You also opted in to our news feed. <a href="${unsubLink}" style="color:inherit;text-decoration:underline">Unsubscribe</a>.</span>`;
+  if (!subscriber) return { footerNote: SUBMITTER_FOOTER };
+  return {
+    footerNote: SUBMITTER_FOOTER,
+    footerUnsubscribeUrl: `${siteUrl()}/unsubscribed?token=${encodeURIComponent(subscriber.unsubscribeToken)}`,
+  };
 }
 
-async function buildReceiptEmail(submission: Submission) {
-  const headline = submission.title?.trim() || movieDisplay(submission);
+/** A header value must be a single line, or the title could inject extra headers. */
+function oneLine(value: string): string {
+  return value.replace(/[\r\n]+/g, " ").trim();
+}
+
+async function buildReceiptEmail(submission: Submission, offerNewsOptIn: boolean) {
+  const headline = oneLine(submission.title?.trim() || movieDisplay(submission));
   const subject = `We got your sighting: ${headline}`;
 
   const firstName = submission.submittedBy?.trim().split(/\s+/)[0];
@@ -65,19 +74,53 @@ async function buildReceiptEmail(submission: Submission) {
     },
   ];
 
+  // They ticked "send me updates" on the form. An address typed into a public form
+  // proves nothing, so subscribing needs a click from the mailbox owner. Skipped
+  // if they're already subscribed (the footer then shows the unsubscribe link).
+  const footer = await getFooter(submission.submitterEmail);
+  if (offerNewsOptIn && submission.submitterEmail && !footer.footerUnsubscribeUrl) {
+    blocks.push(
+      { kind: "divider" },
+      {
+        kind: "paragraph",
+        text: "You asked to hear about new WhereRat updates. Confirm below and we'll add this address. If it wasn't you, just ignore this.",
+        muted: true,
+      },
+      {
+        kind: "button",
+        button: {
+          label: "Yes, send me updates",
+          href: optInConfirmUrl(siteUrl(), submission.submitterEmail),
+        },
+      },
+    );
+  }
+
   const { html, text } = renderBrandedEmail({
     preheader: `Your sighting “${headline}” is in the moderation queue.`,
     heading: "Thanks for the sighting!",
     emoji: "🐀",
     centered: true,
-    footerNote: await getFooterNote(submission.submitterEmail),
+    ...footer,
     blocks,
   });
 
   return { subject, html, text };
 }
 
-export async function notifySubmitterOfReceipt(submission: Submission): Promise<void> {
+export async function notifySubmitterOfReceipt(
+  submission: Submission,
+  options?: { offerNewsOptIn?: boolean },
+): Promise<void> {
+  try {
+    await sendReceipt(submission, options?.offerNewsOptIn === true);
+  } catch (error) {
+    // Best-effort: a failed e-mail must never fail (or crash after) the submission.
+    console.error("[submitter-notify] receipt failed:", error);
+  }
+}
+
+async function sendReceipt(submission: Submission, offerNewsOptIn: boolean): Promise<void> {
   const to = submission.submitterEmail?.trim();
   if (!to) return;
 
@@ -85,12 +128,12 @@ export async function notifySubmitterOfReceipt(submission: Submission): Promise<
   const moderatorEmails = getModeratorAccounts().map((m) => m.email.toLowerCase());
   if (moderatorEmails.includes(to.toLowerCase())) return;
 
-  const { subject, html, text } = await buildReceiptEmail(submission);
+  const { subject, html, text } = await buildReceiptEmail(submission, offerNewsOptIn);
   await sendBrandedEmail({ to, subject, html, text, logTag: "submitter-notify" });
 }
 
 async function buildApprovedEmail(submission: Submission) {
-  const headline = submission.title?.trim() || movieDisplay(submission);
+  const headline = oneLine(submission.title?.trim() || movieDisplay(submission));
   const subject = `Your sighting was approved: ${headline}`;
   const firstName = submission.submittedBy?.trim().split(/\s+/)[0];
   const body = firstName
@@ -110,7 +153,7 @@ async function buildApprovedEmail(submission: Submission) {
     heading: "Your sighting was approved!",
     emoji: "🎉",
     centered: true,
-    footerNote: await getFooterNote(submission.submitterEmail),
+    ...(await getFooter(submission.submitterEmail)),
     blocks,
   });
 
@@ -118,7 +161,7 @@ async function buildApprovedEmail(submission: Submission) {
 }
 
 async function buildRejectedEmail(submission: Submission) {
-  const headline = submission.title?.trim() || movieDisplay(submission);
+  const headline = oneLine(submission.title?.trim() || movieDisplay(submission));
   const subject = `Update on your WhereRat sighting: ${headline}`;
   const firstName = submission.submittedBy?.trim().split(/\s+/)[0];
   const body = firstName
@@ -138,7 +181,7 @@ async function buildRejectedEmail(submission: Submission) {
     heading: "Not quite this time.",
     emoji: "🐭",
     centered: true,
-    footerNote: await getFooterNote(submission.submitterEmail),
+    ...(await getFooter(submission.submitterEmail)),
     blocks,
   });
 
@@ -146,6 +189,17 @@ async function buildRejectedEmail(submission: Submission) {
 }
 
 export async function notifySubmitterOfDecision(
+  submission: Submission,
+  decision: "approved" | "rejected",
+): Promise<void> {
+  try {
+    await sendDecision(submission, decision);
+  } catch (error) {
+    console.error("[submitter-notify] decision e-mail failed:", error);
+  }
+}
+
+async function sendDecision(
   submission: Submission,
   decision: "approved" | "rejected",
 ): Promise<void> {

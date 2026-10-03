@@ -5,8 +5,8 @@ import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import {
   MODERATOR_SESSION_COOKIE,
-  parseModeratorSession,
 } from "@/lib/auth";
+import { verifyModeratorSession } from "@/lib/moderator-session";
 import {
   clampApproximateRatCount,
   normalizeSightingTimestampInput,
@@ -22,6 +22,13 @@ import {
 import { fetchImdbMedia, fetchImdbRelated } from "@/lib/movie-imdb-sync";
 import { reviewSubmission } from "@/lib/moderation-store";
 import { parseMovieIdentityEdits } from "@/lib/movie-identity-form";
+import {
+  SUBMISSION_LIMITS,
+  cleanContentWarnings,
+  cleanRodentTypes,
+  cleanText,
+  safeReturnTo,
+} from "@/lib/submission-input";
 import { deleteSightingById, updateSightingOverride } from "@/lib/sighting-edit-store";
 import { getCatalogMovieByImdbId, getCatalogMovieBySlug } from "@/lib/movie-catalog";
 import {
@@ -38,7 +45,7 @@ const HEX_COLOR_RE = /^#?[0-9a-fA-F]{6}$/;
 
 async function requireModerator() {
   const cookieStore = await cookies();
-  const session = parseModeratorSession(
+  const session = await verifyModeratorSession(
     cookieStore.get(MODERATOR_SESSION_COOKIE)?.value,
   );
   if (!session) {
@@ -532,23 +539,25 @@ export async function deleteMovie(formData: FormData) {
 export async function updateSightingInfo(formData: FormData) {
   const moderator = await requireModerator();
   const slug = String(formData.get("slug") ?? "").trim();
-  const returnTo = String(formData.get("returnTo") ?? "").trim() || `/movies/${slug}`;
+  const returnTo = safeReturnTo(formData.get("returnTo"), `/movies/${slug}`);
   const sightingId = String(formData.get("sightingId") ?? "").trim();
-  const title = String(formData.get("title") ?? "").trim();
+  const title = cleanText(formData.get("title"), SUBMISSION_LIMITS.sightingTitle);
   const timestamp = normalizeSightingTimestampInput(
-    String(formData.get("timestamp") ?? ""),
+    cleanText(formData.get("timestamp"), SUBMISSION_LIMITS.timestamp),
   );
-  const description = String(formData.get("description") ?? "").trim();
+  const description = cleanText(formData.get("description"), SUBMISSION_LIMITS.description);
   const spoiler = formData.get("spoiler") === "on";
   const approximateRatCount = clampApproximateRatCount(
     formData.get("approximateRatCount"),
   );
-  const curatorNote = String(formData.get("curatorNote") ?? "").trim();
-  const contentWarnings = formData.getAll("contentWarnings").map((v) => String(v).trim()).filter(Boolean);
-  const otherWarning = String(formData.get("contentWarningOther") ?? "").trim().slice(0, 200);
-  if (otherWarning) contentWarnings.push(otherWarning);
-  const rodentTypes = formData.getAll("rodentTypes").map((v) => String(v).trim()).filter(Boolean);
-  const otherRodentLabel = String(formData.get("otherRodentLabel") ?? "").trim().slice(0, 60);
+  const curatorNote = cleanText(formData.get("curatorNote"), 2_000);
+  const otherWarning = cleanText(formData.get("contentWarningOther"), SUBMISSION_LIMITS.contentWarning);
+  const contentWarnings = cleanContentWarnings([
+    ...formData.getAll("contentWarnings"),
+    ...(otherWarning ? [otherWarning] : []),
+  ]);
+  const rodentTypes = cleanRodentTypes(formData.getAll("rodentTypes"));
+  const otherRodentLabel = cleanText(formData.get("otherRodentLabel"), 60);
   const reason = "Edited from movie page.";
   const galleryManaged = Boolean(formData.get(SIGHTING_GALLERY_SENTINEL));
   const legacyListManaged = String(formData.get("imageListManaged") ?? "") === "1";
@@ -669,7 +678,7 @@ export async function updateSightingInfo(formData: FormData) {
 export async function deleteSighting(formData: FormData) {
   await requireModerator();
   const slug = String(formData.get("slug") ?? "").trim();
-  const returnTo = String(formData.get("returnTo") ?? "").trim() || `/movies/${slug}`;
+  const returnTo = safeReturnTo(formData.get("returnTo"), `/movies/${slug}`);
   const sightingId = String(formData.get("sightingId") ?? "").trim();
   if (!slug || !sightingId) {
     redirect(returnTo);

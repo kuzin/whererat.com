@@ -269,7 +269,14 @@ export type Sighting = {
 };
 
 export function clampApproximateRatCount(value: unknown): number {
-  const n = Number.parseInt(String(value ?? "").trim(), 10);
+  const raw = String(value ?? "").trim();
+  // Plain digit runs go through Number() so a 309+ digit string becomes Infinity
+  // (clamped to 9999) rather than failing parseInt's finite check and collapsing to 1.
+  if (/^\+?\d+$/.test(raw)) {
+    const big = Number(raw);
+    return big < 1 ? 1 : Math.min(9999, Math.floor(big));
+  }
+  const n = Number.parseInt(raw, 10);
   if (!Number.isFinite(n) || n < 1) return 1;
   return Math.min(9999, Math.floor(n));
 }
@@ -341,7 +348,7 @@ export type ReviewAction = {
 };
 
 export function normalizeImdbId(value: string) {
-  const match = value.trim().match(/tt\d{7,9}/i);
+  const match = value.trim().match(/tt\d{7,9}(?!\d)/i);
   return match?.[0].toLowerCase() ?? "";
 }
 
@@ -633,7 +640,9 @@ function firstMeaningfulLine(value: string): string {
   if (!t) return "";
   const sentence = t.match(/^[\s\S]{1,200}?[.!?](?=\s|$)/);
   if (sentence) return sentence[0].trim();
-  return t.length > 120 ? `${t.slice(0, 117)}…` : t;
+  // Cut by code point so an emoji's surrogate pair is never split.
+  const chars = Array.from(t);
+  return chars.length > 120 ? `${chars.slice(0, 117).join("")}…` : t;
 }
 
 /** Headline for a sighting card (explicit title, or a short line from the description). */

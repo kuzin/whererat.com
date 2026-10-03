@@ -89,7 +89,7 @@ export function ArticleView({
             </Title>
 
             <div className="mt-6">
-                <SightingMarkdown markdown={item.body} />
+                <SightingMarkdown markdown={item.body} trustedImages />
             </div>
 
             <div className="mt-8 flex items-center gap-3 border-t border-stone-900/10 pt-6 dark:border-white/10">

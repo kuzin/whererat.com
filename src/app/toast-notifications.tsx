@@ -71,6 +71,11 @@ const toastMessages: Record<string, { title: string; body: string; tone: ToastTo
     body: "Enter a movie or show title and a valid IMDb ID (tt1234567).",
     tone: "error",
   },
+  "invalid-sighting": {
+    title: "Not approved",
+    body: "A sighting title, time in the film and description are required to approve.",
+    tone: "error",
+  },
   "movie-saved": {
     title: "Movie saved",
     body: "Movie info was updated successfully.",

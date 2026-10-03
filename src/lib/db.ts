@@ -1,4 +1,4 @@
-import { Pool } from "pg";
+import { Pool, type PoolClient } from "pg";
 
 let sharedPool: Pool | undefined;
 
@@ -63,6 +63,30 @@ export function getDbPool() {
     });
   }
   return sharedPool;
+}
+
+/**
+ * Runs `fn` on one pooled connection inside BEGIN/COMMIT, rolling back if it
+ * throws, so multi-statement writes (status + images + audit row) land together
+ * or not at all.
+ */
+export async function withTransaction<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
+  const client = await getDbPool().connect();
+  try {
+    await client.query("begin");
+    const result = await fn(client);
+    await client.query("commit");
+    return result;
+  } catch (error) {
+    try {
+      await client.query("rollback");
+    } catch {
+      // The original error is the one worth surfacing.
+    }
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 export async function closeDbPool() {

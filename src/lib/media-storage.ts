@@ -37,6 +37,24 @@ async function writeBlobImage(file: File, folder: "sightings" | "avatars", ext: 
   return blob.url;
 }
 
+/** The declared MIME type is client-controlled, so also check the file's leading bytes. */
+async function matchesDeclaredImageType(file: File): Promise<boolean> {
+  const head = new Uint8Array(await file.slice(0, 12).arrayBuffer());
+  const startsWith = (...bytes: number[]) => bytes.every((b, i) => head[i] === b);
+  switch (file.type) {
+    case "image/jpeg":
+      return startsWith(0xff, 0xd8, 0xff);
+    case "image/png":
+      return startsWith(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a);
+    case "image/gif":
+      return startsWith(0x47, 0x49, 0x46, 0x38, 0x37, 0x61) || startsWith(0x47, 0x49, 0x46, 0x38, 0x39, 0x61);
+    case "image/webp":
+      return startsWith(0x52, 0x49, 0x46, 0x46) && head[8] === 0x57 && head[9] === 0x45 && head[10] === 0x42 && head[11] === 0x50;
+    default:
+      return false;
+  }
+}
+
 export async function persistImageFile(
   file: File,
   options: {
@@ -46,6 +64,7 @@ export async function persistImageFile(
 ) {
   const ext = IMAGE_MIME_EXT[file.type];
   if (!ext || file.size > options.maxBytes || file.size === 0) return undefined;
+  if (!(await matchesDeclaredImageType(file))) return undefined;
 
   if (isBlobEnabled()) {
     return writeBlobImage(file, options.folder, ext);
@@ -99,7 +118,12 @@ function clampZoom(v: number) {
 export async function parseSightingImageGalleryForm(
   formData: FormData,
   fields: GalleryFormFieldNames,
-  options?: { maxBytes?: number; maxImages?: number },
+  options?: {
+    maxBytes?: number;
+    maxImages?: number;
+    /** Gate for client-supplied URLs (existing images). Defaults to allowing any; public intake restricts it. */
+    allowPersistedUrl?: (url: string) => boolean;
+  },
 ): Promise<SightingImageSlot[]> {
   const maxImages = options?.maxImages ?? 5;
   const maxBytes = options?.maxBytes ?? 8 * 1024 * 1024;
@@ -131,7 +155,7 @@ export async function parseSightingImageGalleryForm(
         finalUrl = uploaded;
         if (!finalAlt) finalAlt = sanitizeAlt(file.name);
       }
-    } else if (persistedUrl) {
+    } else if (persistedUrl && (options?.allowPersistedUrl?.(persistedUrl) ?? true)) {
       finalUrl = persistedUrl;
     }
 

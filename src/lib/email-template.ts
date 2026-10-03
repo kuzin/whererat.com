@@ -59,6 +59,8 @@ export type BrandedEmail = {
   centered?: boolean;
   /** Footer disclaimer line. Defaults to the moderator-team note. */
   footerNote?: string;
+  /** Adds an "opted in … Unsubscribe" line under the footer note, with a real link. */
+  footerUnsubscribeUrl?: string;
   /** Override the base URL used for brand image links (defaults to siteUrl()). */
   baseUrl?: string;
   /**
@@ -81,6 +83,8 @@ function renderInlineMarkdown(input: string): string {
     .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
     .replace(/_(.+?)_/g, "<em>$1</em>");
 }
+
+const OPTED_IN_LINE = "You also opted in to our news feed.";
 
 function escapeHtml(input: string): string {
   return input
@@ -315,7 +319,11 @@ export function renderBrandedEmail(email: BrandedEmail): { html: string; text: s
             <tr>
               <td align="center" style="padding:4px 16px 0">
                 <p style="margin:8px 0 0;font-family:${FONT_STACK};font-size:11px;line-height:1.5;color:${C.muted}">
-                  ${escapeHtml(email.footerNote ?? "You're receiving this because you're on the WhereRat moderation team.")}
+                  ${escapeHtml(email.footerNote ?? "You're receiving this because you're on the WhereRat moderation team.")}${
+                    email.footerUnsubscribeUrl
+                      ? `<br><br><span style="font-size:11px">${escapeHtml(OPTED_IN_LINE)} <a href="${escapeHtml(email.footerUnsubscribeUrl)}" style="color:inherit;text-decoration:underline">Unsubscribe</a>.</span>`
+                      : ""
+                  }
                 </p>
               </td>
             </tr>
@@ -347,6 +355,9 @@ export function renderBrandedEmail(email: BrandedEmail): { html: string; text: s
         "—",
         `WhereRat · ${SITE}`,
       ].filter((x): x is string => x !== null);
+  if (email.footerUnsubscribeUrl) {
+    textParts.push("", `${OPTED_IN_LINE} Unsubscribe: ${email.footerUnsubscribeUrl}`);
+  }
   const text = textParts.join("\n");
 
   return { html, text };

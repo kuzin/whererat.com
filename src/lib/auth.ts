@@ -5,15 +5,23 @@ export const MODERATOR_SESSION_COOKIE = "whererat_moderator";
 /** Matches seeded moderator avatar; used for favicon / PWA icons (single source of truth). */
 export const SEEDED_MODERATOR_AVATAR_URL = "/favicon.svg";
 
-const SESSION_SECRET =
-  process.env.SESSION_SECRET ?? "dev-insecure-secret-change-in-prod";
+const configuredSessionSecret = process.env.SESSION_SECRET?.trim();
 
-if (process.env.NODE_ENV === "production" && !process.env.SESSION_SECRET) {
+if (process.env.NODE_ENV === "production" && !configuredSessionSecret) {
   console.warn(
-    "SECURITY WARNING: SESSION_SECRET env var is not set. " +
-      "Sessions are signed with an insecure default key. Set SESSION_SECRET in production.",
+    "SECURITY WARNING: SESSION_SECRET env var is not set (or blank). " +
+      "Moderator sessions will not persist across instances. Set SESSION_SECRET in production.",
   );
 }
+
+// Fail closed: without a real secret in production, sign with a random per-process
+// key rather than the well-known development default (which would let anyone forge
+// an owner cookie). A blank env var counts as unset.
+const SESSION_SECRET =
+  configuredSessionSecret ||
+  (process.env.NODE_ENV === "production"
+    ? randomUUID()
+    : "dev-insecure-secret-change-in-prod");
 
 export type ModeratorAccount = {
   id: string;
@@ -30,10 +38,11 @@ export type ModeratorSession = Omit<ModeratorAccount, "password">;
 type SignedSessionPayload = ModeratorSession & { exp: number };
 
 export function getModeratorAccounts(): ModeratorAccount[] {
+  // `||` not `??`: a blank value is "not configured", never an empty password.
   const password =
-    process.env.MODERATOR_ADMIN_PASSWORD ??
-    process.env.MODERATOR_CURATOR_PASSWORD ??
-    process.env.MODERATOR_PASSWORD;
+    process.env.MODERATOR_ADMIN_PASSWORD?.trim() ||
+    process.env.MODERATOR_CURATOR_PASSWORD?.trim() ||
+    process.env.MODERATOR_PASSWORD?.trim();
 
   if (process.env.NODE_ENV === "production" && !password) {
     console.error(
@@ -50,7 +59,7 @@ export function getModeratorAccounts(): ModeratorAccount[] {
       avatarUrl: SEEDED_MODERATOR_AVATAR_URL,
       role: "owner",
       password:
-        password ??
+        password ||
         (process.env.NODE_ENV === "production" ? randomUUID() : "ratpack"),
     },
   ];
@@ -67,6 +76,15 @@ export function authenticateModerator(username: string, password: string) {
 
 function hmacSign(payload: string): string {
   return createHmac("sha256", SESSION_SECRET).update(payload).digest("base64url");
+}
+
+/**
+ * HMAC for other signed tokens (e.g. e-mail confirmation links). Bound to a
+ * `purpose` so a token minted for one use can never be replayed as another, and
+ * to the session secret so rotating it invalidates outstanding tokens.
+ */
+export function signForPurpose(purpose: string, payload: string): string {
+  return createHmac("sha256", SESSION_SECRET).update(`${purpose}\n${payload}`).digest("base64url");
 }
 
 export function createModeratorSession(account: ModeratorAccount): string {
