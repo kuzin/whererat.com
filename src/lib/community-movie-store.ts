@@ -158,8 +158,10 @@ export async function ensureCommunityMovieForSubmission(
       const newMovie = rowToMovie(inserted.rows[0]);
 
       // Fire-and-forget: enrich with OMDb metadata and IMDb rat facts.
-      // Errors are swallowed inside syncMovieFromImdb so approval is never blocked.
-      void syncMovieFromImdb(newMovie);
+      // Never blocks approval: a failed enrichment is logged and retried by the cron resync.
+      void Promise.resolve(syncMovieFromImdb(newMovie)).catch((error) => {
+        console.warn("[community-movie] IMDb enrichment failed:", error instanceof Error ? error.message : error);
+      });
 
       return newMovie;
     } catch (error) {

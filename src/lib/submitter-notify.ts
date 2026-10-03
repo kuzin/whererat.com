@@ -12,6 +12,7 @@ import { sendBrandedEmail } from "@/lib/email-send";
 import { renderBrandedEmail, type EmailContentBlock } from "@/lib/email-template";
 import { type Submission } from "@/lib/whererat";
 import { optInConfirmUrl } from "@/lib/opt-in-token";
+import { oneLine } from "@/lib/submission-input";
 import { getSubscriber } from "@/lib/email-preferences-store";
 import { getModeratorAccounts } from "@/lib/auth";
 
@@ -47,11 +48,6 @@ async function getFooter(
     footerNote: SUBMITTER_FOOTER,
     footerUnsubscribeUrl: `${siteUrl()}/unsubscribed?token=${encodeURIComponent(subscriber.unsubscribeToken)}`,
   };
-}
-
-/** A header value must be a single line, or the title could inject extra headers. */
-function oneLine(value: string): string {
-  return value.replace(/[\r\n]+/g, " ").trim();
 }
 
 async function buildReceiptEmail(submission: Submission, offerNewsOptIn: boolean) {

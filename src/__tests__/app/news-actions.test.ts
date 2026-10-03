@@ -43,6 +43,12 @@ vi.mock("@/lib/moderator-session", () => ({
   verifyModeratorSession: vi.fn(async () => h.session),
 }));
 vi.mock("@/lib/news-store", () => ({
+  NEWS_ITEM_TYPES: [
+    { value: "announcement", label: "Announcement" },
+    { value: "product-news", label: "Product news" },
+    { value: "community", label: "Community" },
+    { value: "update", label: "Update" },
+  ],
   createNewsItem: vi.fn(),
   updateNewsItem: vi.fn(),
   toggleNewsItemPublished: vi.fn(),
@@ -264,13 +270,13 @@ describe("createNewsItemAction", () => {
     expect(revalidatePath).not.toHaveBeenCalled();
   });
 
-  it.fails("BUG: an unknown 'type' is passed through to the DB (CHECK violation → 500) instead of being validated", async () => {
+  it("BUG: an unknown 'type' is passed through to the DB (CHECK violation → 500) instead of being validated", async () => {
     await redirectOf(createNewsItemAction(form({ title: "T", body: "B", type: "<script>" })));
     const arg = vi.mocked(createNewsItem).mock.calls[0]?.[0];
     expect(["announcement", "product-news", "community", "update"]).toContain(arg?.type);
   });
 
-  it.fails("BUG: image position/zoom are not clamped (gallery uploads clamp 0-100 / 1-4); Infinity or 9999 is stored", async () => {
+  it("BUG: image position/zoom are not clamped (gallery uploads clamp 0-100 / 1-4); Infinity or 9999 is stored", async () => {
     await redirectOf(
       createNewsItemAction(
         form({ title: "T", body: "B", imagePositionX: "-500", imagePositionY: "99999", imageZoom: "Infinity" }),
@@ -283,7 +289,7 @@ describe("createNewsItemAction", () => {
     expect(arg.imageZoom).toBeLessThanOrEqual(4);
   });
 
-  it.fails("BUG: the image is written to storage before title/body are validated, orphaning a file when the form is rejected", async () => {
+  it("BUG: the image is written to storage before title/body are validated, orphaning a file when the form is rejected", async () => {
     const file = new File([new Uint8Array([1, 2, 3])], "a.png", { type: "image/png" });
     await redirectOf(createNewsItemAction(form({ title: "", body: "", newsImage: file })));
     expect(persistImageFile).not.toHaveBeenCalled();
@@ -343,7 +349,7 @@ describe("updateNewsItemAction", () => {
     expect(updateNewsItem).not.toHaveBeenCalled();
   });
 
-  it.fails("BUG: an unknown 'type' is passed through to the DB instead of being validated", async () => {
+  it("BUG: an unknown 'type' is passed through to the DB instead of being validated", async () => {
     await redirectOf(updateNewsItemAction(form({ id: "n1", title: "T", body: "B", type: "bogus" })));
     const arg = vi.mocked(updateNewsItem).mock.calls[0]?.[1];
     expect(["announcement", "product-news", "community", "update"]).toContain(arg?.type);

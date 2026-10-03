@@ -567,7 +567,7 @@ describe("fallback candidates", () => {
   // per word and per character (O(n^2) work) although at most 14 are ever fetched. A
   // ~9k-char query (well inside a URL limit) costs ~3s of CPU per request. Counting
   // Array#join calls is a deterministic proxy for that eager candidate construction.
-  it.fails("BUG: a long multi-word query eagerly builds one candidate per word although only 14 are ever fetched", async () => {
+  it("BUG: a long multi-word query eagerly builds one candidate per word although only 14 are ever fetched", async () => {
     installFetch({});
     const join = vi.spyOn(Array.prototype, "join");
     try {
@@ -578,7 +578,7 @@ describe("fallback candidates", () => {
     }
   });
 
-  it.fails("BUG: query length is not capped before it is forwarded to OMDb", async () => {
+  it("BUG: query length is not capped before it is forwarded to OMDb", async () => {
     installFetch({});
     await call(`?q=${"a".repeat(5000)}`);
     for (const u of searchCalls()) {
@@ -638,7 +638,7 @@ describe("OMDb failure handling", () => {
     expect(body.results).toHaveLength(1);
   });
 
-  it.fails("BUG: a network error (fetch rejects) on search should degrade to 502/seed results, not an unhandled throw", async () => {
+  it("BUG: a network error (fetch rejects) on search should degrade to 502/seed results, not an unhandled throw", async () => {
     mockCatalog.mockResolvedValue([movie("m1", "Ratatouille", "tt1")]);
     fetchMock = vi.fn(async () => {
       throw new TypeError("fetch failed");
@@ -648,13 +648,13 @@ describe("OMDb failure handling", () => {
     expect([200, 502]).toContain(res.status);
   });
 
-  it.fails("BUG: OMDb returning a non-JSON 200 body should degrade gracefully, not throw", async () => {
+  it("BUG: OMDb returning a non-JSON 200 body should degrade gracefully, not throw", async () => {
     installFetch({ search: { Ratatouille: "bad-json" } });
     const res = await GET(new Request("http://localhost/api/movies/search?q=Ratatouille"));
     expect([200, 502]).toContain(res.status);
   });
 
-  it.fails("BUG: a failed detail lookup (fetch rejects) should not discard the whole result list", async () => {
+  it("BUG: a failed detail lookup (fetch rejects) should not discard the whole result list", async () => {
     installFetch({
       search: { Ratatouille: [item("Ratatouille", "tt1"), item("Ratatouille 2", "tt2")] },
       details: { tt1: "throw" },

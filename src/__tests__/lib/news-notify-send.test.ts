@@ -93,12 +93,12 @@ describe("buildNewsletterEmail", () => {
   // The HTML footer carries an unsubscribe link but the text/plain alternative has none
   // (footerNote / footerUnsubscribeUrl only reach the HTML), so text-only readers get no
   // in-body opt-out. The List-Unsubscribe header is the only remaining route.
-  it.fails("BUG: the plain-text part of a newsletter has no unsubscribe link", () => {
+  it("BUG: the plain-text part of a newsletter has no unsubscribe link", () => {
     const out = buildNewsletterEmail(item(), "tok");
     expect(out.text).toContain("/api/unsubscribe?token=tok");
   });
 
-  it.fails("BUG: the plain-text part of a digest has no unsubscribe link", () => {
+  it("BUG: the plain-text part of a digest has no unsubscribe link", () => {
     const out = buildNewsletterDigestEmail([item()], "tok", "S");
     expect(out.text).toContain("/api/unsubscribe?token=tok");
   });
@@ -161,7 +161,7 @@ describe("buildNewsletterEmail", () => {
     expect(preheader).toHaveLength(120);
   });
 
-  it.fails("BUG: plain-text part contains the raw <span> markup of the type chip / date line", () => {
+  it("BUG: plain-text part contains the raw <span> markup of the type chip / date line", () => {
     const out = buildNewsletterEmail(item(), "t");
     expect(out.text).not.toContain("<span");
   });
@@ -210,7 +210,7 @@ describe("buildNewsletterDigestEmail", () => {
     expect(out.html).not.toContain(evil);
   });
 
-  it.fails("BUG: a body that starts with '<span ' is emitted as raw HTML to every subscriber", () => {
+  it("BUG: a body that starts with '<span ' is emitted as raw HTML to every subscriber", () => {
     const out = buildNewsletterDigestEmail(
       [item({ body: `<span style="x">hi</span><img src=//evil.example/pixel.gif>` })],
       "t",

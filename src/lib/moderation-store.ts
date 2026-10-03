@@ -96,6 +96,8 @@ function toDbSubmission(row: {
         const url = String(rec.url ?? "").trim();
         if (!url) return undefined;
         const numOr = (v: unknown, fallback: number) => {
+          // Number(null) and Number("") are 0, which would silently mean "left/top edge".
+          if (v === null || v === undefined || (typeof v === "string" && v.trim() === "")) return fallback;
           const n = typeof v === "number" ? v : Number(v);
           return Number.isFinite(n) ? n : fallback;
         };

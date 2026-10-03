@@ -19,10 +19,6 @@ test.describe("browsing the catalog", () => {
   });
 
   test("a search can't be turned into a wildcard that matches everything", async ({ page }) => {
-    // Known bug: `m.imdb_id ilike $1` doesn't escape LIKE wildcards, so "%" matches every movie
-    // (pinned by an it.fails unit test in src/__tests__/lib/movie-catalog.test.ts). Remove
-    // test.fail() when it is fixed.
-    test.fail(true, "LIKE wildcard in catalog search");
     await page.goto("/?q=%25");
     await expect(page.getByText(MOVIES.ratatouille.title)).toHaveCount(0);
     await expect(page.getByText(MOVIES.downton.title)).toHaveCount(0);

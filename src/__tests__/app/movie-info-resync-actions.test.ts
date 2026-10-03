@@ -35,6 +35,8 @@ vi.mock("@/lib/movie-edit-store", () => ({
   updateMovieOverride: vi.fn(),
 }));
 vi.mock("@/lib/movie-imdb-sync", () => ({
+  IMDB_GRAPHQL_HEADERS: { "Content-Type": "application/json", Referer: "https://www.imdb.com/" },
+  isImdbTitleId: (v: string) => /^tt\d{7,9}$/.test(v),
   fetchImdbMedia: vi.fn(async () => ({ videos: [], images: [] })),
   fetchImdbRelated: vi.fn(async () => []),
 }));
@@ -270,21 +272,21 @@ describe("updateMovieInfo", () => {
     expect(mockRevalidate).not.toHaveBeenCalled();
   });
 
-  it.fails("BUG: a blank / non-numeric release year or runtime is written as 0 / NaN (no parseReleaseYear-style validation)", async () => {
+  it("BUG: a blank / non-numeric release year or runtime is written as 0 / NaN (no parseReleaseYear-style validation)", async () => {
     await run(updateMovieInfo, form({ slug: "ratatouille", releaseYear: "", runtimeMinutes: "abc" }));
     const o = override();
     expect(o.releaseYear).toBe(2007);
     expect(o.runtimeMinutes).toBe(111);
   });
 
-  it.fails("BUG: out-of-range / fractional years and runtimes are forwarded to Postgres (int4) instead of rejected", async () => {
+  it("BUG: out-of-range / fractional years and runtimes are forwarded to Postgres (int4) instead of rejected", async () => {
     await run(updateMovieInfo, form({ slug: "ratatouille", releaseYear: "99999999999", runtimeMinutes: "-5.5" }));
     const o = override();
     expect(Number.isInteger(o.releaseYear) && o.releaseYear >= 1800 && o.releaseYear <= 2200).toBe(true);
     expect(Number.isInteger(o.runtimeMinutes) && o.runtimeMinutes > 0).toBe(true);
   });
 
-  it.fails("BUG: manual pagePalette / pagePaletteDark are 'cleared' with undefined, which JSON drops, so the stored values survive the `metadata || $11` merge (file's own comment says to use null)", async () => {
+  it("BUG: manual pagePalette / pagePaletteDark are 'cleared' with undefined, which JSON drops, so the stored values survive the `metadata || $11` merge (file's own comment says to use null)", async () => {
     mockBySlug.mockResolvedValue(
       baseMovie({}, { pagePalette: { wash: "#111111", columnWash: "#222222", accent: "#333333", heroBloom: "#444444" } }),
     );
@@ -530,13 +532,13 @@ describe("resyncMovieFromImdb", () => {
       expect(params(r.redirect!).get("trivia")).toBe("none");
     });
 
-    it.fails("BUG: the IMDb GraphQL trivia request omits the Referer header IMDb requires (403), so rat facts always fail here", async () => {
+    it("BUG: the IMDb GraphQL trivia request omits the Referer header IMDb requires (403), so rat facts always fail here", async () => {
       install({ requireReferer: true, trivia: ["A rat appears."] });
       const r = await resync();
       expect(params(r.redirect!).get("facts")).toBe("1");
     });
 
-    it.fails("BUG: the IMDb GraphQL reviews request omits the Referer header IMDb requires (403), so reviews always come back empty here", async () => {
+    it("BUG: the IMDb GraphQL reviews request omits the Referer header IMDb requires (403), so reviews always come back empty here", async () => {
       install({ requireReferer: true, reviews: [review("1", "rat!")] });
       const r = await resync();
       expect(params(r.redirect!).get("reviews")).toBe("1");

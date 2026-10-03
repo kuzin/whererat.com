@@ -181,10 +181,24 @@ describe("IMDb GraphQL transport", () => {
     expect(warn.mock.calls.some(([m]: unknown[]) => String(m).includes("partial"))).toBe(true);
   });
 
-  it.fails("BUG(latent): the IMDb id is interpolated into the GraphQL document unescaped (callers currently pass normalised ids)", async () => {
-    await fetchImdbMedia('tt0382932") { id } evil: title(id: "tt0000001');
-    const query = JSON.parse(String(graphqlCalls()[0]![1].body)).query as string;
-    expect(query).not.toContain("evil: title");
+  it.each([
+    'tt0382932") { id } evil: title(id: "tt0000001',
+    "tt123",
+    "tt1234567890",
+    "",
+    "nm0000001",
+    "tt0382932\n",
+  ])("never sends a GraphQL document for a malformed id: %j", async (id) => {
+    installFetch({});
+    expect(await fetchImdbMedia(id)).toEqual({ videos: [], images: [] });
+    expect(await fetchImdbRelated(id)).toEqual([]);
+    expect(graphqlCalls()).toHaveLength(0);
+  });
+
+  it("a well-formed id is still sent", async () => {
+    installFetch({});
+    await fetchImdbMedia("tt0382932");
+    expect(graphqlCalls()).toHaveLength(1);
   });
 });
 
@@ -467,7 +481,7 @@ describe("syncMovieFromImdb", () => {
       expect(written().metadata).not.toHaveProperty("imdbReviews");
     });
 
-    it.fails("BUG: numeric HTML entities other than &#39; (e.g. &#8217; &#x27;) are left undecoded in review text", async () => {
+    it("BUG: numeric HTML entities other than &#39; (e.g. &#8217; &#x27;) are left undecoded in review text", async () => {
       installFetch({ reviews: [review({ summary: { originalText: "Don&#8217;t miss" }, text: { originalText: { plainText: "It&#x27;s fun" } } })] });
       await syncMovieFromImdb(movie("m1"));
       const r = written().metadata.imdbReviews[0];
@@ -553,10 +567,31 @@ describe("syncMovieFromImdb", () => {
     expect(written().metadata.imdbImages).toHaveLength(1);
   });
 
-  it("completes with every upstream failing (best-effort)", async () => {
+  it("reports a failure (and writes nothing) when every upstream request fails", async () => {
     process.env.OMDB_API_KEY = "k";
     installFetch({ omdb: "throw", graphql: "throw" });
+    await expect(syncMovieFromImdb(movie("m1"))).rejects.toThrow(/no source answered/);
+    expect(h.updateOverride).not.toHaveBeenCalled();
+  });
+
+  it("still succeeds when IMDb answers but has nothing to add (empty is not failure)", async () => {
+    installFetch({});
     await expect(syncMovieFromImdb(movie("m1"))).resolves.toBeUndefined();
+    expect(h.updateOverride).toHaveBeenCalledOnce();
+  });
+
+  it("succeeds when only OMDb answers and IMDb GraphQL is blocked", async () => {
+    process.env.OMDB_API_KEY = "k";
+    installFetch({ omdb: { Title: "Ratatouille", Year: "2007", Director: "Brad Bird" }, graphql: "http-403" });
+    await expect(syncMovieFromImdb(movie("m1"))).resolves.toBeUndefined();
+    expect(written().metadata.director).toBe("Brad Bird");
+  });
+
+  it("concurrent syncs keep separate failure tallies (one blocked, one healthy)", async () => {
+    installFetch({ graphql: "http-403" });
+    const blocked = syncMovieFromImdb(movie("blocked"));
+    const results = await Promise.allSettled([blocked, syncMovieFromImdb(movie("also-blocked"))]);
+    expect(results.map((r) => r.status)).toEqual(["rejected", "rejected"]);
   });
 
   it("propagates a failure to persist the override", async () => {
@@ -564,14 +599,15 @@ describe("syncMovieFromImdb", () => {
     await expect(syncMovieFromImdb(movie("m1"))).rejects.toThrow("db down");
   });
 
-  it.fails("BUG: when every upstream source fails, the movie is still stamped lastSyncedAt/'OMDb via IMDb ID' (and counted as synced), hiding the outage and demoting it in stale-first order", async () => {
+  it("an outage is not recorded as a successful sync (no fresh lastSyncedAt stamp), and resync counts it as an error", async () => {
     process.env.OMDB_API_KEY = "k";
     installFetch({ omdb: "http-error", graphql: "http-403" });
-    await syncMovieFromImdb(movie("m1", { metadata: { lastSyncedAt: "2020-01-01", metadataProvider: "IMDb seed" } }));
-    const wroteFreshStamp =
-      h.updateOverride.mock.calls.length > 0 &&
-      (written().metadata.lastSyncedAt !== "2020-01-01" || written().metadata.metadataProvider === "OMDb via IMDb ID");
-    expect(wroteFreshStamp).toBe(false);
+    const stale = movie("m1", { metadata: { lastSyncedAt: "2020-01-01", metadataProvider: "IMDb seed" } });
+    await expect(syncMovieFromImdb(stale)).rejects.toThrow();
+    expect(h.updateOverride).not.toHaveBeenCalled();
+
+    h.getCatalogMovies.mockResolvedValue([stale]);
+    expect(await resyncAllCatalogMoviesFromImdb()).toMatchObject({ total: 1, synced: 0, errors: 1 });
   });
 });
 
