@@ -1,3 +1,4 @@
+import { isOffline } from "@/lib/offline";
 import { updateMovieOverride } from "@/lib/movie-edit-store";
 import { getCatalogMovies } from "@/lib/movie-catalog";
 import { fetchTmdbYoutubeTrailerKey } from "@/lib/tmdb-banner";
@@ -430,6 +431,8 @@ export async function fetchImdbMedia(
 export async function syncMovieFromImdb(movie: Movie): Promise<void> {
   const imdbId = movie.externalIds.imdb;
   if (!imdbId) return;
+  // Hermetic runs (e2e) must not call IMDb / OMDb / TMDB.
+  if (isOffline()) return;
 
   const apiKey = process.env.OMDB_API_KEY;
 
