@@ -157,10 +157,16 @@ export default async function ModerationPage({
   );
 
   const stats = await getCatalogStatsWithCommunity();
-  const liveSightings = await getAllMergedSightings();
-  const sightingsWithoutImages = liveSightings.filter(
-    ({ sighting }) => sightingImageCount(sighting) === 0,
-  ).length;
+  // Only the owner-controls badge uses this, so skip the catalog-wide read for moderators.
+  const sightingsWithoutImages =
+    session.role === "owner"
+      ? (await getAllMergedSightings()).filter(({ sighting }) => sightingImageCount(sighting) === 0)
+          .length
+      : 0;
+  const sightingImagesLabel =
+    sightingsWithoutImages > 0
+      ? `Sighting images (${sightingsWithoutImages} without images)`
+      : "Sighting images";
   const userStore = await readUserStore();
   const trustSignalAccounts = [...userStore.accounts]
     .map((account) => ({
@@ -214,6 +220,26 @@ export default async function ModerationPage({
               </svg>
             </Link>
             <Link
+              href={sightingsWithoutImages > 0 ? "/moderation/images?filter=without" : "/moderation/images"}
+              title={sightingImagesLabel}
+              aria-label={sightingImagesLabel}
+              className="wr-btn-ghost relative inline-flex h-11 w-11 items-center justify-center px-0 py-0"
+            >
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                <rect width="18" height="18" x="3" y="3" rx="2" />
+                <circle cx="9" cy="9" r="2" />
+                <path d="m21 15-3.09-3.09a2 2 0 0 0-2.82 0L6 21" />
+              </svg>
+              {sightingsWithoutImages > 0 ? (
+                <span
+                  aria-hidden
+                  className="absolute -right-1.5 -top-1.5 min-w-5 rounded-full border border-amber-700/40 bg-amber-500 px-1 text-center text-[10px] font-black leading-[18px] text-stone-950 dark:border-amber-300/40 dark:bg-amber-400 dark:text-stone-950"
+                >
+                  {sightingsWithoutImages > 99 ? "99+" : sightingsWithoutImages}
+                </span>
+              ) : null}
+            </Link>
+            <Link
               href="/email-preview/newsletter"
               title="Email previews"
               aria-label="Email previews"
@@ -229,25 +255,6 @@ export default async function ModerationPage({
       ) : null}
 
       <section className="grid grid-cols-1 gap-6">
-        <div className="order-1 wr-card-soft flex flex-col gap-3 p-5 sm:flex-row sm:items-center sm:justify-between sm:px-7">
-          <div>
-            <h2 className="text-lg font-black text-stone-950 dark:text-stone-100">Sighting images</h2>
-            <p className="mt-0.5 text-sm text-stone-600 dark:text-stone-400">
-              {liveSightings.length === 0
-                ? "No live sightings yet."
-                : sightingsWithoutImages > 0
-                  ? `${sightingsWithoutImages} of ${liveSightings.length} live sightings have no images yet.`
-                  : `All ${liveSightings.length} live sightings have images.`}
-            </p>
-          </div>
-          <Link
-            href={sightingsWithoutImages > 0 ? "/moderation/images?filter=without" : "/moderation/images"}
-            className="wr-btn-ghost shrink-0 self-start sm:self-auto"
-          >
-            Manage images
-          </Link>
-        </div>
-
         <aside className="contents">
           <div className="order-3 wr-card-soft space-y-3 p-5 sm:p-7">
             <h2 className="text-xl font-black text-stone-950 dark:text-stone-100">Queue health</h2>

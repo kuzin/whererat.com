@@ -28,15 +28,17 @@ const row = (page: import("@playwright/test").Page, text: string) =>
   page.getByRole("listitem").filter({ hasText: text });
 
 test.describe("sighting images", () => {
-  test("lists every live sighting, filtered by whether it has images", async ({ page, login }) => {
+  test("lists only approved, live sightings, filtered by whether they have images", async ({ page, login }) => {
     await seedApproved("sub-with", "Remy on the shelf", "10%");
     await addImage("sub-with", "/favicon.svg");
     await seedApproved("sub-without", "Emile in the rain", "20%");
     await seedSubmission({ id: "sub-pending", movieTitle: "Ratatouille", imdbId: MOVIES.ratatouille.imdbId, title: "Still pending" });
-    await login(MODERATOR); // not just the owner
+    await seedSubmission({ id: "sub-rejected", movieTitle: "Ratatouille", imdbId: MOVIES.ratatouille.imdbId, title: "Was rejected", status: "rejected" });
+    await addImage("sub-pending", "/favicon.svg");
+    await login();
 
-    await expect(page.getByText("1 of 2 live sightings have no images yet.")).toBeVisible();
-    await page.getByRole("link", { name: "Manage images" }).click();
+    // The entry point lives in the owner controls, with a count of sightings missing images.
+    await page.getByRole("link", { name: "Sighting images (1 without images)" }).click();
     await expect(page).toHaveURL(/\/moderation\/images\?filter=without$/);
 
     const filters = page.getByRole("navigation", { name: "Filter sightings by images" });
@@ -45,12 +47,15 @@ test.describe("sighting images", () => {
     await expect(row(page, "Emile in the rain")).toContainText("No images");
     await expect(row(page, "Remy on the shelf")).toHaveCount(0);
     await expect(page.getByText("Still pending")).toHaveCount(0);
+    await expect(page.getByText("Was rejected")).toHaveCount(0);
 
     await filters.getByRole("link", { name: "With images (1)" }).click();
     await expect(row(page, "Remy on the shelf")).toContainText("1 image");
     await expect(row(page, "Emile in the rain")).toHaveCount(0);
 
     await page.getByRole("link", { name: "All (2)" }).click();
+    await expect(page.getByText("Still pending")).toHaveCount(0);
+    await expect(page.getByText("Was rejected")).toHaveCount(0);
     await page.getByRole("searchbox", { name: "Search sightings" }).fill("emile");
     await page.getByRole("button", { name: "Search" }).click();
     await expect(page).toHaveURL(/q=emile/);
@@ -118,6 +123,11 @@ test.describe("sighting images", () => {
     await page.getByRole("button", { name: "Save", exact: true }).click();
     await expect(page).toHaveURL(/toast=sighting-images-saved/);
     expect(await imagesOf("sub-forge")).toEqual([]);
+  });
+
+  test("the entry point is an owner control", async ({ page, login }) => {
+    await login(MODERATOR);
+    await expect(page.getByRole("link", { name: /^Sighting images/ })).toHaveCount(0);
   });
 
   test("signed-out visitors are sent to log in", async ({ page }) => {

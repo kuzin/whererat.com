@@ -100,7 +100,7 @@ export default async function SightingImagesPage({
     <main className="wr-page-shell py-10">
       <PageHeader back={{ href: "/moderation", label: "Moderation" }} title="Sighting images" />
       <p className="mb-6 max-w-2xl text-sm text-stone-600 dark:text-stone-400">
-        Every live sighting in the catalog. Open one to add, replace, reframe or remove its images.
+        Every approved, live sighting in the catalog — pending, rejected and deleted ones never appear here. Open one to add, replace, reframe or remove its images.
       </p>
 
       <div className="mb-5 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
