@@ -8,6 +8,7 @@ import {
   parseModeratorSession,
 } from "@/lib/auth";
 import { deleteSubmissionById, reviewSubmission } from "@/lib/moderation-store";
+import { parseMovieIdentityEdits } from "@/lib/movie-identity-form";
 import {
   clampApproximateRatCount,
   normalizeSightingTimestampInput,
@@ -119,6 +120,11 @@ export async function moderateSubmission(formData: FormData) {
   const rodentTypes = formData.getAll("rodentTypes").map((v) => String(v).trim()).filter(Boolean);
   const otherRodentLabel = String(formData.get("otherRodentLabel") ?? "").trim().slice(0, 60);
 
+  const movieIdentity = parseMovieIdentityEdits(formData);
+  if (!movieIdentity.ok) {
+    redirect(`/moderation?toast=invalid-movie&edit=${encodeURIComponent(submissionId)}`);
+  }
+
   const hasEditFields =
     formData.has("sightingTitle") ||
     formData.has("imdbKind") ||
@@ -134,6 +140,7 @@ export async function moderateSubmission(formData: FormData) {
     formData.has("sightingImages");
   const edits = hasEditFields
     ? {
+      ...movieIdentity.edits,
       title: String(formData.get("sightingTitle") ?? "").trim(),
       imdbKind,
       seasonNumber:

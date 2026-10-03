@@ -66,6 +66,11 @@ const toastMessages: Record<string, { title: string; body: string; tone: ToastTo
     body: "The submission has been moved back to the pending review queue.",
     tone: "info",
   },
+  "invalid-movie": {
+    title: "Title not saved",
+    body: "Enter a movie or show title and a valid IMDb ID (tt1234567).",
+    tone: "error",
+  },
   "movie-saved": {
     title: "Movie saved",
     body: "Movie info was updated successfully.",

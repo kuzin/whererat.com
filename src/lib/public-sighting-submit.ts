@@ -12,7 +12,7 @@ import {
   type SightingImageSlot,
 } from "@/lib/whererat";
 import { addSubmission } from "@/lib/moderation-store";
-import { getCatalogMovieByImdbId, getCatalogMovieByTitleSearch } from "@/lib/movie-catalog";
+import { findCatalogMovieForSubmission } from "@/lib/movie-catalog";
 import {
   persistSightingFiles,
   parseSightingImageGalleryForm,
@@ -157,9 +157,7 @@ export async function executePublicSightingSubmit(
       return { ok: false, code: "missing", message: "Season and episode are required for shows." };
     }
 
-    const existingMovie =
-      (imdbId ? await getCatalogMovieByImdbId(imdbId) : undefined) ??
-      (await getCatalogMovieByTitleSearch(movieTitle));
+    const existingMovie = await findCatalogMovieForSubmission({ imdbId, movieTitle });
 
     const sightingImages = await persistSightingUploadsFromForm(formData);
     const firstImage = sightingImages[0];

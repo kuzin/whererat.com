@@ -5,8 +5,7 @@ vi.mock("@/lib/moderation-store", () => ({
   addSubmission: vi.fn().mockResolvedValue({ id: "sub-new" }),
 }));
 vi.mock("@/lib/movie-catalog", () => ({
-  getCatalogMovieByImdbId: vi.fn().mockResolvedValue(null),
-  getCatalogMovieByTitleSearch: vi.fn().mockResolvedValue(null),
+  findCatalogMovieForSubmission: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("@/lib/media-storage", () => ({
   persistSightingFiles: vi.fn().mockResolvedValue([]),
@@ -27,7 +26,7 @@ import {
   executePublicSightingSubmit,
 } from "@/lib/public-sighting-submit";
 import { addSubmission } from "@/lib/moderation-store";
-import { getCatalogMovieByImdbId } from "@/lib/movie-catalog";
+import { findCatalogMovieForSubmission } from "@/lib/movie-catalog";
 
 const mockAddSubmission = vi.mocked(addSubmission);
 
@@ -312,7 +311,7 @@ describe("executePublicSightingSubmit — validation", () => {
   });
 
   it("includes catalog match hint when movie already exists in catalog", async () => {
-    vi.mocked(getCatalogMovieByImdbId).mockResolvedValueOnce({
+    vi.mocked(findCatalogMovieForSubmission).mockResolvedValueOnce({
       id: "movie-tt0382932",
       slug: "ratatouille",
       title: "Ratatouille",

@@ -9,6 +9,7 @@ import {
   SightingContentWarningsField,
   SightingRodentTypesField,
 } from "@/components/forms/sighting-fields";
+import { MovieIdentityFields } from "@/components/forms/movie-identity-fields";
 import { ImageUploadGallery, type InitialGalleryImage } from "@/components/forms/image-upload-gallery";
 import {
   getSightingTimestampPercent,
@@ -69,6 +70,9 @@ export function ModerationEditModal({
         <input name="seasonNumber" type="hidden" value={submission.seasonNumber ?? ""} />
         <input name="episodeNumber" type="hidden" value={submission.episodeNumber ?? ""} />
         <input name="episodeTitle" type="hidden" value={submission.episodeTitle ?? ""} />
+
+        {/* Movie / show */}
+        <MovieIdentityFields movieTitle={submission.movieTitle} imdbId={submission.imdbId} />
 
         {/* Sighting title */}
         <label className="flex flex-col gap-2 text-sm font-bold text-stone-700 dark:text-stone-200">

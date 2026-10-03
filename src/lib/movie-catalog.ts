@@ -87,6 +87,27 @@ export async function getCatalogMovieByTitleSearch(title: string): Promise<Movie
   return results[0];
 }
 
+/**
+ * Which catalog movie a submission belongs to.
+ *
+ * An IMDb id is authoritative: when the submission has one, only a movie with
+ * that id matches. We must not fall back to `getCatalogMovieByTitleSearch` there —
+ * it is a fuzzy full-text search (it also reads movie summaries), so a short
+ * title like "Life" can land on an unrelated movie such as Downton Abbey.
+ * Without an id, only an exact (case-insensitive) title match counts.
+ */
+export async function findCatalogMovieForSubmission(submission: {
+  imdbId?: string | null;
+  movieTitle: string;
+}): Promise<Movie | undefined> {
+  const imdbId = normalizeImdbId(submission.imdbId ?? "");
+  if (imdbId) return getCatalogMovieByImdbId(imdbId);
+  const wanted = submission.movieTitle.trim().toLowerCase();
+  if (!wanted) return undefined;
+  const allMovies = await getCatalogMovies();
+  return allMovies.find((movie) => movie.title.trim().toLowerCase() === wanted);
+}
+
 // SQL for catalog search with pg_trgm fuzzy matching + sighting content
 const SQL_SEARCH_WITH_TRGM = `
   SELECT m.id,

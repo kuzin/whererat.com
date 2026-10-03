@@ -31,8 +31,8 @@ import {
 import { moderateSubmission, removeSubmission, rereviewSubmission, resyncAllMovies } from "./actions";
 import { readModerationStore } from "@/lib/moderation-store";
 import {
+  findCatalogMovieForSubmission,
   getCatalogMovieByImdbId,
-  getCatalogMovieByTitleSearch,
   getCatalogStatsWithCommunity,
 } from "@/lib/movie-catalog";
 import { ResyncAllButton } from "@/components/moderation/resync-all-button";
@@ -120,10 +120,7 @@ export default async function ModerationPage({
   // Build view hrefs for all approved submissions
   const approvedViewEntries = await Promise.all(
     approvedSubmissions.map(async (submission) => {
-      const movie =
-        (submission.imdbId
-          ? await getCatalogMovieByImdbId(submission.imdbId)
-          : undefined) ?? (await getCatalogMovieByTitleSearch(submission.movieTitle));
+      const movie = await findCatalogMovieForSubmission(submission);
       return movie ? ([submission.id, getMoviePath(movie)] as const) : undefined;
     }),
   );
@@ -150,10 +147,7 @@ export default async function ModerationPage({
     : undefined;
   const pendingMovieEntries = await Promise.all(
     pendingSlice.map(async (submission) => {
-      const movie =
-        (submission.imdbId
-          ? await getCatalogMovieByImdbId(submission.imdbId)
-          : undefined) ?? (await getCatalogMovieByTitleSearch(submission.movieTitle));
+      const movie = await findCatalogMovieForSubmission(submission);
       return [submission.id, movie] as const;
     }),
   );

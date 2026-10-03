@@ -9,6 +9,7 @@ import {
   SightingContentWarningsField,
   SightingRodentTypesField,
 } from "@/components/forms/sighting-fields";
+import { MovieIdentityFields } from "@/components/forms/movie-identity-fields";
 import { ImageUploadGallery, type InitialGalleryImage } from "@/components/forms/image-upload-gallery";
 import { ConfirmSubmitButton } from "@/components/forms/confirm-submit-button";
 import {
@@ -29,6 +30,8 @@ type EditSightingFormProps = {
   deleteAction: (formData: FormData) => void | Promise<void>;
   /** When set, the form gets this id and footer buttons are suppressed — parent renders them externally. */
   formId?: string;
+  /** Current title this sighting is filed under. Only passed for sightings backed by a submission. */
+  movieIdentity?: { movieTitle: string; imdbId?: string };
 };
 
 export function EditSightingForm({
@@ -39,6 +42,7 @@ export function EditSightingForm({
   updateAction,
   deleteAction,
   formId,
+  movieIdentity,
 }: EditSightingFormProps) {
   const initialImages = getSightingImageRefs(sighting);
   const initialPercent = getSightingTimestampPercent(sighting.timestamp) ?? 50;
@@ -51,6 +55,13 @@ export function EditSightingForm({
       <input type="hidden" name="slug" value={slug} />
       <input type="hidden" name="sightingId" value={sighting.id} />
       <input type="hidden" name="returnTo" value={returnTo} />
+
+      {movieIdentity ? (
+        <MovieIdentityFields
+          movieTitle={movieIdentity.movieTitle}
+          imdbId={movieIdentity.imdbId}
+        />
+      ) : null}
 
       {/* Title */}
       <label className="flex flex-col gap-2 text-sm font-bold text-stone-700 dark:text-stone-200">

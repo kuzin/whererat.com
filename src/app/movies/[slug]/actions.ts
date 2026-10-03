@@ -21,8 +21,9 @@ import {
 } from "@/lib/movie-edit-store";
 import { fetchImdbMedia, fetchImdbRelated } from "@/lib/movie-imdb-sync";
 import { reviewSubmission } from "@/lib/moderation-store";
+import { parseMovieIdentityEdits } from "@/lib/movie-identity-form";
 import { deleteSightingById, updateSightingOverride } from "@/lib/sighting-edit-store";
-import { getCatalogMovieBySlug } from "@/lib/movie-catalog";
+import { getCatalogMovieByImdbId, getCatalogMovieBySlug } from "@/lib/movie-catalog";
 import {
   persistSightingFiles,
   parseSightingImageGalleryForm,
@@ -599,14 +600,21 @@ export async function updateSightingInfo(formData: FormData) {
     redirect(returnTo);
   }
 
+  let movedToPath: string | undefined;
   if (sightingId.startsWith("queue-")) {
     const submissionId = sightingId.slice("queue-".length);
+    const movieIdentity = parseMovieIdentityEdits(formData);
+    if (!movieIdentity.ok) {
+      const sep = returnTo.includes("?") ? "&" : "?";
+      redirect(`${returnTo}${sep}toast=invalid-movie`);
+    }
     await reviewSubmission({
       submissionId,
       decision: "edited and approved",
       moderator,
       reason,
       edits: {
+        ...movieIdentity.edits,
         title,
         timestamp,
         description,
@@ -622,6 +630,12 @@ export async function updateSightingInfo(formData: FormData) {
           rodentTypes.includes("other") && otherRodentLabel ? otherRodentLabel : undefined,
       },
     });
+    // Re-homed under a different title: the sighting is no longer on this page.
+    const newImdbId = movieIdentity.edits.imdbId;
+    if (newImdbId && newImdbId !== (await getCatalogMovieBySlug(slug))?.externalIds.imdb) {
+      const target = await getCatalogMovieByImdbId(newImdbId);
+      if (target) movedToPath = getMoviePath(target);
+    }
   } else {
     await updateSightingOverride(sightingId, {
       title,
@@ -642,6 +656,10 @@ export async function updateSightingInfo(formData: FormData) {
 
   revalidatePath(returnTo.split("?")[0] || `/movies/${slug}`);
   revalidatePath("/moderation");
+  if (movedToPath) {
+    revalidatePath(movedToPath);
+    redirect(`${movedToPath}?toast=sighting-saved`);
+  }
   const sightingSavedReturnTo = returnTo.includes("?")
     ? `${returnTo}&toast=sighting-saved`
     : `${returnTo}?toast=sighting-saved`;
