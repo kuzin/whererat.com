@@ -1,4 +1,8 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
+
+// Real scrypt (64 MiB, ~100-200 ms each) with several hashes per test: give it room
+// when the machine is busy (e.g. under coverage instrumentation).
+vi.setConfig({ testTimeout: 30_000 });
 import {
   MAX_PASSWORD_LENGTH,
   hashPassword,

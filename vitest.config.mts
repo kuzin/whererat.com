@@ -8,17 +8,20 @@ export default defineConfig({
     setupFiles: ["src/__tests__/setup.ts"],
     coverage: {
       provider: "v8",
+      // Server-side logic: shared libs plus API routes and server actions. UI
+      // components and page JSX are covered by the Playwright e2e suite instead.
       include: [
-        "src/app/api/v1/**/*.ts",
-        "src/lib/api-v1/**/*.ts",
-        "src/lib/public-sighting-submit.ts",
-        "src/lib/whererat.ts",
+        "src/lib/**/*.ts",
+        "src/app/**/route.ts",
+        "src/app/**/actions.ts",
       ],
+      exclude: ["src/**/*.stories.*", "src/__tests__/**"],
       thresholds: {
-        lines: 79,
-        functions: 80,
-        branches: 70,
-        statements: 77,
+        // Ratchet: set a few points under current coverage (88 / 87 / 84 / 88).
+        lines: 85,
+        functions: 84,
+        branches: 80,
+        statements: 85,
       },
     },
   },
