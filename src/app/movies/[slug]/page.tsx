@@ -1104,6 +1104,11 @@ export async function MoviePage({
                   isSeriesTitle={isSeriesTitle}
                   updateAction={updateSightingInfo}
                   deleteAction={deleteSighting}
+                  movieIdentity={
+                    editingSighting.id.startsWith("queue-")
+                      ? { movieTitle: movie.title, imdbId: movie.externalIds.imdb }
+                      : undefined
+                  }
                 />
               </div>
 

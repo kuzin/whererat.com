@@ -214,10 +214,8 @@ export async function ensureCommunityMovieForSubmission(
      where is_deleted = false`,
   );
   const allMovies = allMoviesRes.rows;
-  const existing = allMovies.find((movie) => {
-    if (imdbId && movie.imdb_id === imdbId) return true;
-    return movie.title.trim().toLowerCase() === title.toLowerCase();
-  });
+  // The IMDb id is the identity: two different titles can share a name ("Life").
+  const existing = allMovies.find((movie) => movie.imdb_id === imdbId);
   if (existing) return rowToMovie(existing);
 
   const releaseYear =

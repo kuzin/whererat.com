@@ -10,15 +10,14 @@ vi.mock("@/lib/sighting-edit-store", () => ({
   getDeletedSightingIds: vi.fn(),
 }));
 vi.mock("@/lib/movie-catalog", () => ({
-  getCatalogMovieByImdbId: vi.fn(),
-  getCatalogMovieByTitleSearch: vi.fn(),
+  findCatalogMovieForSubmission: vi.fn(),
 }));
 vi.mock("@/lib/submitter-notify", () => ({ notifySubmitterOfDecision: vi.fn() }));
 vi.mock("@/lib/community-movie-store", () => ({ ensureCommunityMovieForSubmission: vi.fn() }));
 
 import { getRodentTypesByMovieId, getMovieIdsWithRodentType } from "@/lib/moderation-store";
 import { getSightingOverrides, getDeletedSightingIds } from "@/lib/sighting-edit-store";
-import { getCatalogMovieByImdbId, getCatalogMovieByTitleSearch } from "@/lib/movie-catalog";
+import { findCatalogMovieForSubmission } from "@/lib/movie-catalog";
 import type { Movie } from "@/lib/whererat";
 
 /** Only `id` is read by the code under test; the rest satisfies the Movie shape. */
@@ -50,8 +49,7 @@ function movieStub(id: string): Movie {
 
 const mockGetSightingOverrides = vi.mocked(getSightingOverrides);
 const mockGetDeletedSightingIds = vi.mocked(getDeletedSightingIds);
-const mockGetCatalogMovieByImdbId = vi.mocked(getCatalogMovieByImdbId);
-const mockGetCatalogMovieByTitleSearch = vi.mocked(getCatalogMovieByTitleSearch);
+const mockFindCatalogMovie = vi.mocked(findCatalogMovieForSubmission);
 
 type SubmissionRow = {
   id: string;
@@ -94,9 +92,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockGetSightingOverrides.mockResolvedValue({});
   mockGetDeletedSightingIds.mockResolvedValue(new Set());
-  mockGetCatalogMovieByTitleSearch.mockResolvedValue(undefined);
-  mockGetCatalogMovieByImdbId.mockImplementation(async (id: string) =>
-    id === "tt0000001" ? movieStub("movie-1") : undefined,
+  mockFindCatalogMovie.mockImplementation(async ({ imdbId }) =>
+    imdbId === "tt0000001" ? movieStub("movie-1") : undefined,
   );
 });
 

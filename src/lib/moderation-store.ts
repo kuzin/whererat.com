@@ -1,6 +1,5 @@
 import {
   clampApproximateRatCount,
-  normalizeImdbId,
   reviewActions as seedReviewActions,
   submissions as seedSubmissions,
   getSubmissionSightingTitle,
@@ -14,10 +13,7 @@ import { getDeletedSightingIds, getSightingOverrides } from "@/lib/sighting-edit
 import {
   ensureCommunityMovieForSubmission,
 } from "@/lib/community-movie-store";
-import {
-  getCatalogMovieByImdbId,
-  getCatalogMovieByTitleSearch,
-} from "@/lib/movie-catalog";
+import { findCatalogMovieForSubmission } from "@/lib/movie-catalog";
 import { getDbPool } from "@/lib/db";
 
 type ReviewDecision = "approved" | "edited" | "edited and approved" | "rejected";
@@ -26,6 +22,7 @@ type SubmissionEdits = Partial<
     Submission,
     | "movieTitle"
     | "movieYear"
+    | "imdbId"
     | "title"
     | "imdbKind"
     | "seasonNumber"
@@ -411,10 +408,7 @@ async function submissionToSyntheticSighting(
   expectedMovieId: string,
   reviewedAtISO: string,
 ): Promise<Sighting | undefined> {
-  const movie =
-    (submission.imdbId
-      ? await getCatalogMovieByImdbId(submission.imdbId)
-      : undefined) ?? (await getCatalogMovieByTitleSearch(submission.movieTitle));
+  const movie = await findCatalogMovieForSubmission(submission);
   if (!movie || movie.id !== expectedMovieId) return undefined;
   const name = submission.submittedBy.trim();
   const headline = getSubmissionSightingTitle(submission);
@@ -491,9 +485,7 @@ export async function getRodentTypesByMovieId(): Promise<Map<string, Set<string>
   // Mirrors submissionToSyntheticSighting's movie resolution (IMDb id, then title).
   for (const submission of storedSubs) {
     if (submission.status !== "approved") continue;
-    const movie =
-      (submission.imdbId ? await getCatalogMovieByImdbId(submission.imdbId) : undefined) ??
-      (await getCatalogMovieByTitleSearch(submission.movieTitle));
+    const movie = await findCatalogMovieForSubmission(submission);
     if (!movie) continue;
     add(movie.id, `queue-${submission.id}`, submission.rodentTypes);
   }
@@ -629,15 +621,16 @@ export async function reviewSubmission({
     ...edits,
     status,
   };
+  // The old poster belongs to the old title; moving to another IMDb id must not keep it.
+  if (edits?.imdbId && edits.imdbId !== submission.imdbId && !edits.moviePosterUrl) {
+    merged.moviePosterUrl = undefined;
+  }
   const reviewedSubmission: Submission = {
     ...merged,
     approximateRatCount: clampApproximateRatCount(merged.approximateRatCount),
   };
 
-  const lookupImdb = normalizeImdbId(reviewedSubmission.imdbId ?? "");
-  const existingCatalogMovie =
-    (lookupImdb ? await getCatalogMovieByImdbId(lookupImdb) : undefined) ??
-    (await getCatalogMovieByTitleSearch(reviewedSubmission.movieTitle));
+  const existingCatalogMovie = await findCatalogMovieForSubmission(reviewedSubmission);
   if (
     (decision === "approved" || decision === "edited and approved") &&
     !existingCatalogMovie
