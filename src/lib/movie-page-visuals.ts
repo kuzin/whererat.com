@@ -88,10 +88,13 @@ export async function getSyncedMoviePageVisuals(movie: Movie, { forceRefresh }: 
     return { bannerUrl, bannerIsWidescreen, palette: cachedPalette, paletteDark: cachedPaletteDark };
   }
 
-  const palette =
-    (await extractMoviePagePalette(bannerUrl)) ??
-    (posterCandidate ? await extractMoviePagePalette(posterCandidate) : null) ??
-    (await extractMoviePagePalette(movie.posterUrl));
+  // Try each distinct source once, in order: the banner often IS the poster, and a failed
+  // fetch can cost up to 14 s, so never retry the same URL.
+  let palette: MoviePagePalette | null = null;
+  for (const url of new Set([bannerUrl, posterCandidate, movie.posterUrl].filter(Boolean))) {
+    palette = await extractMoviePagePalette(url);
+    if (palette) break;
+  }
   const paletteDark = palette ? deriveDarkMoviePagePalette(palette) : null;
 
   return { bannerUrl, bannerIsWidescreen, palette, paletteDark };

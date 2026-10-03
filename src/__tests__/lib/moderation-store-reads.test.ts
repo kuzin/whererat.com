@@ -307,7 +307,7 @@ describe("readModerationStore — mapping", () => {
 
     // numOr() runs Number(v): null and "" become 0, not the documented default of 50.
     // Unreachable today (image_position_* are NOT NULL DEFAULT 50) but a latent trap.
-    it.fails("BUG(latent): null / blank position values map to 0 (left/top edge) instead of the 50 default", async () => {
+    it("BUG(latent): null / blank position values map to 0 (left/top edge) instead of the 50 default", async () => {
       state.submissions = [
         subRow("a", { images_json: [{ url: "/a.png", positionX: null, positionY: "", zoom: null }] }),
       ];

@@ -173,19 +173,16 @@ async function fetchOmdbDetails(imdbId: string, apiKey: string) {
   url.searchParams.set("i", imdbId);
   url.searchParams.set("plot", "short");
 
-  const response = await fetch(url, { next: { revalidate: 60 * 60 * 24 } });
-
-  if (!response.ok) {
+  // Best-effort enrichment: a network error or a non-JSON body must not throw away
+  // the whole result list, so any failure just means "no extra details".
+  try {
+    const response = await fetch(url, { next: { revalidate: 60 * 60 * 24 } });
+    if (!response.ok) return undefined;
+    const details = (await response.json()) as OmdbDetails;
+    return details.Response === "True" ? details : undefined;
+  } catch {
     return undefined;
   }
-
-  const details = (await response.json()) as OmdbDetails;
-
-  if (details.Response !== "True") {
-    return undefined;
-  }
-
-  return details;
 }
 
 async function fetchOmdbSearch(query: string, apiKey: string, page = 1) {
@@ -194,9 +191,15 @@ async function fetchOmdbSearch(query: string, apiKey: string, page = 1) {
   searchUrl.searchParams.set("s", query);
   if (page > 1) searchUrl.searchParams.set("page", String(page));
 
-  const response = await fetch(searchUrl, { next: { revalidate: 60 * 60 } });
-  if (!response.ok) return undefined;
-  return (await response.json()) as OmdbSearchPayload;
+  try {
+    const response = await fetch(searchUrl, { next: { revalidate: 60 * 60 } });
+    if (!response.ok) return undefined;
+    return (await response.json()) as OmdbSearchPayload;
+  } catch {
+    // Treated like any other failed request: the caller tries the next candidate,
+    // then reports "Movie search failed." / falls back to the catalog.
+    return undefined;
+  }
 }
 
 function scoreTitleByQuery(title: string, query: string): number {
@@ -229,6 +232,7 @@ function scoreTitleByQuery(title: string, query: string): number {
 
 /** OMDb `s=` often misses prefix/typo queries (e.g. "Ratato") — try shorter strings in order. */
 const MAX_OMDB_SEARCH_ATTEMPTS = 14;
+const MAX_QUERY_LENGTH = 100;
 
 function buildOmdbSearchCandidates(normalizedQuery: string): string[] {
   const out: string[] = [];
@@ -259,7 +263,8 @@ function buildOmdbSearchCandidates(normalizedQuery: string): string[] {
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const rawQuery = searchParams.get("q") ?? "";
-  const query = rawQuery.trim();
+  // No title is longer than this; it also bounds the candidate list and what is forwarded to OMDb.
+  const query = rawQuery.trim().slice(0, MAX_QUERY_LENGTH);
   const page = Math.max(1, Number(searchParams.get("page") ?? "1") || 1);
   const normalizedQuery = query.replace(/\s+/g, " ");
   const apiKey = process.env.OMDB_API_KEY;

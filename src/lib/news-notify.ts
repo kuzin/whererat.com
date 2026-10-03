@@ -76,10 +76,10 @@ export function buildNewsletterEmail(
 
     // Tag chip and date (as HTML block)
     blocks.push({
-        kind: "paragraph",
-        text: `<span style="display:inline-block;padding:2px 10px 2px 8px;font-size:12px;font-weight:700;border-radius:8px;background:${typeStyle.bg};color:${typeStyle.color};border:1px solid ${typeStyle.border};margin-right:8px;vertical-align:middle;">${typeLabel}</span><span style="font-size:13px;color:#888;vertical-align:middle;">${formattedDate}</span>`,
-        // We'll allow HTML here and handle it in the renderer below
-        // Custom margin handled in email-template renderer
+        kind: "meta",
+        label: typeLabel,
+        date: formattedDate,
+        colors: typeStyle,
         marginTop: 0,
         marginBottom: 28,
     });
@@ -209,8 +209,10 @@ export function buildNewsletterDigestEmail(
         const typeLabel = typeLabelMap[item.type] ?? item.type;
 
         blocks.push({
-            kind: "paragraph",
-            text: `<span style="display:inline-block;padding:2px 10px 2px 8px;font-size:12px;font-weight:700;border-radius:8px;background:${typeStyle.bg};color:${typeStyle.color};border:1px solid ${typeStyle.border};margin-right:8px;vertical-align:middle;">${typeLabel}</span><span style="font-size:13px;color:#888;vertical-align:middle;">${formattedDate}</span>`,
+            kind: "meta",
+            label: typeLabel,
+            date: formattedDate,
+            colors: typeStyle,
             marginTop: index === 0 ? 0 : 20,
             marginBottom: 12,
         });

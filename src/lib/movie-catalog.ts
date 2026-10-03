@@ -29,7 +29,8 @@ type MovieRow = {
 function normalizeImageUrl(value: string | undefined, fallback: string) {
   const raw = value?.trim() ?? "";
   if (!raw) return fallback;
-  if (raw.startsWith("/")) return raw;
+  // A single leading slash only: "//host/x.png" and "/\\host" are off-site URLs, not local paths.
+  if (/^\/(?![/\\])/.test(raw)) return raw;
   if (/^https?:\/\//i.test(raw)) return raw;
   return fallback;
 }
@@ -131,7 +132,7 @@ const SQL_SEARCH_WITH_TRGM = `
     AND (
       to_tsvector('english', m.title || ' ' || m.summary) @@ plainto_tsquery('english', $1)
       OR m.title % $1
-      OR m.imdb_id ilike $1
+      OR lower(m.imdb_id) = lower($1)
       OR EXISTS (
         SELECT 1 FROM sightings s
         WHERE s.movie_id = m.id AND s.is_deleted = false
@@ -161,7 +162,7 @@ const SQL_SEARCH_NO_TRGM = `
   WHERE m.is_deleted = false
     AND (
       to_tsvector('english', m.title || ' ' || m.summary) @@ plainto_tsquery('english', $1)
-      OR m.imdb_id ilike $1
+      OR lower(m.imdb_id) = lower($1)
       OR EXISTS (
         SELECT 1 FROM sightings s
         WHERE s.movie_id = m.id AND s.is_deleted = false

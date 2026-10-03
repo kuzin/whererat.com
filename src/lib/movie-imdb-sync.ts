@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { isOffline } from "@/lib/offline";
 import { updateMovieOverride } from "@/lib/movie-edit-store";
 import { getCatalogMovies } from "@/lib/movie-catalog";
@@ -26,8 +27,18 @@ const HTML_ENTITIES: Record<string, string> = {
   "&rdquo;": "\u201d",
 };
 
+function decodeCodePoint(code: number, fallback: string): string {
+  // Reject out-of-range values and lone surrogates rather than emitting garbage.
+  if (!Number.isInteger(code) || code < 1 || code > 0x10ffff || (code >= 0xd800 && code <= 0xdfff)) return fallback;
+  return String.fromCodePoint(code);
+}
+
 function decodeEntities(s: string): string {
-  return s.replace(/&[a-z]+;|&#\d+;/gi, (e) => HTML_ENTITIES[e] ?? e);
+  return s.replace(/&#x([0-9a-f]+);|&#(\d+);|&[a-z]+;/gi, (entity, hex?: string, dec?: string) => {
+    if (hex !== undefined) return decodeCodePoint(Number.parseInt(hex, 16), entity);
+    if (dec !== undefined) return decodeCodePoint(Number.parseInt(dec, 10), entity);
+    return HTML_ENTITIES[entity] ?? entity;
+  });
 }
 
 function stripHtml(html: string): string {
@@ -142,6 +153,27 @@ async function fetchOmdbTotalEpisodeCount(params: {
 const IMDB_GRAPHQL_URL = "https://api.graphql.imdb.com/";
 
 /**
+ * The id is interpolated into a GraphQL document, so anything but a plain title id
+ * (`tt` + digits) must never reach it: a crafted value could append extra fields.
+ */
+const IMDB_TITLE_ID_RE = /^tt\d{7,9}$/;
+export const isImdbTitleId = (value: string) => IMDB_TITLE_ID_RE.test(value);
+
+/** IMDb's GraphQL endpoint answers a bare 403 to requests without a Referer. Use these for every call. */
+export const IMDB_GRAPHQL_HEADERS = {
+  "Content-Type": "application/json",
+  Referer: "https://www.imdb.com/",
+} as const;
+
+/**
+ * Per-sync tally of IMDb requests that got an answer vs. failed outright, so a sync
+ * can tell "nothing to add" (200, empty) from "IMDb is down / blocking us" (403, timeout).
+ * AsyncLocalStorage keeps concurrent syncs from mixing their counts.
+ */
+type RequestHealth = { answered: number; failed: number };
+const requestHealth = new AsyncLocalStorage<RequestHealth>();
+
+/**
  * IMDb's public GraphQL endpoint rejects requests without a Referer with a bare 403.
  * Every caller here degrades to an empty result, so a missing header shows up as a
  * movie page with no reviews/media/related rather than as an error — keep the header,
@@ -154,18 +186,19 @@ async function fetchImdbGraphql<T>(
   try {
     const res = await fetch(IMDB_GRAPHQL_URL, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Referer: "https://www.imdb.com/",
-      },
+      headers: IMDB_GRAPHQL_HEADERS,
       body: JSON.stringify({ query }),
       cache: "no-store",
       signal: AbortSignal.timeout(30_000),
     });
     if (!res.ok) {
       console.warn(`[imdb-sync] ${label}: HTTP ${res.status}`);
+      const health = requestHealth.getStore();
+      if (health) health.failed++;
       return undefined;
     }
+    const health = requestHealth.getStore();
+    if (health) health.answered++;
     const json = (await res.json()) as { data?: T; errors?: unknown[] };
     if (json.errors?.length) {
       console.warn(`[imdb-sync] ${label}: ${JSON.stringify(json.errors).slice(0, 300)}`);
@@ -175,11 +208,14 @@ async function fetchImdbGraphql<T>(
     console.warn(
       `[imdb-sync] ${label}: ${error instanceof Error ? error.message : String(error)}`,
     );
+    const health = requestHealth.getStore();
+    if (health) health.failed++;
     return undefined;
   }
 }
 
 async function fetchImdbTrivia(imdbId: string): Promise<unknown[]> {
+  if (!IMDB_TITLE_ID_RE.test(imdbId)) return [];
   const data = await fetchImdbGraphql<{ title?: { trivia?: { edges?: unknown[] } } }>(
     `trivia ${imdbId}`,
     `
@@ -209,6 +245,7 @@ async function fetchImdbTrivia(imdbId: string): Promise<unknown[]> {
 // ---------------------------------------------------------------------------
 
 async function fetchImdbReviews(imdbId: string): Promise<unknown[]> {
+  if (!IMDB_TITLE_ID_RE.test(imdbId)) return [];
   const data = await fetchImdbGraphql<{ title?: { reviews?: { edges?: unknown[] } } }>(
     `reviews ${imdbId}`,
     `
@@ -301,6 +338,7 @@ function extractRatFacts(edges: unknown[]): string[] {
 // ---------------------------------------------------------------------------
 
 export async function fetchImdbRelated(imdbId: string): Promise<ImdbRelatedTitle[]> {
+  if (!IMDB_TITLE_ID_RE.test(imdbId)) return [];
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const data = await fetchImdbGraphql<Record<string, any>>(
       `related ${imdbId}`,
@@ -347,6 +385,7 @@ export async function fetchImdbRelated(imdbId: string): Promise<ImdbRelatedTitle
 export async function fetchImdbMedia(
   imdbId: string,
 ): Promise<{ videos: ImdbVideo[]; images: ImdbImage[] }> {
+  if (!IMDB_TITLE_ID_RE.test(imdbId)) return { videos: [], images: [] };
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const data = await fetchImdbGraphql<Record<string, any>>(
       `media ${imdbId}`,
@@ -437,14 +476,27 @@ export async function syncMovieFromImdb(movie: Movie): Promise<void> {
   const apiKey = process.env.OMDB_API_KEY;
 
   // Run all fetches in parallel
-  const [omdb, triviaEdges, reviewEdges, imdbRelated, imdbMedia, youtubeTrailerKey] = await Promise.all([
-    apiKey ? fetchOmdbData(imdbId, apiKey) : Promise.resolve(undefined),
-    fetchImdbTrivia(imdbId),
-    fetchImdbReviews(imdbId),
-    fetchImdbRelated(imdbId),
-    fetchImdbMedia(imdbId),
-    fetchTmdbYoutubeTrailerKey({ imdbId, tmdbId: movie.externalIds.tmdb }),
-  ]);
+  const health: RequestHealth = { answered: 0, failed: 0 };
+  const [omdb, triviaEdges, reviewEdges, imdbRelated, imdbMedia, youtubeTrailerKey] = await requestHealth.run(
+    health,
+    () =>
+      Promise.all([
+        apiKey ? fetchOmdbData(imdbId, apiKey) : Promise.resolve(undefined),
+        fetchImdbTrivia(imdbId),
+        fetchImdbReviews(imdbId),
+        fetchImdbRelated(imdbId),
+        fetchImdbMedia(imdbId),
+        fetchTmdbYoutubeTrailerKey({ imdbId, tmdbId: movie.externalIds.tmdb }),
+      ]),
+  );
+
+  // If nothing answered (every IMDb request failed, and OMDb gave nothing), the sources are
+  // down or blocking us. Stamping "synced" would hide that and push the movie to the back of
+  // the stale-first order, so report it: resync counts an error and the cron log shows it.
+  // (IMDb answering with empty data is fine: there is simply nothing to add.)
+  if (health.answered === 0 && health.failed > 0 && !omdb && !youtubeTrailerKey) {
+    throw new Error(`IMDb sync for ${imdbId} failed: no source answered`);
+  }
 
   const ratFacts = extractRatFacts(triviaEdges);
   const imdbReviews = extractReviews(reviewEdges);

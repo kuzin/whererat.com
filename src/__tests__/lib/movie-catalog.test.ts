@@ -171,7 +171,7 @@ describe("getCatalogMovies", () => {
       expect((await getCatalogMovies())[0]!.backdropUrl).toBe(FALLBACK_BACKDROP);
     });
 
-    it.fails("BUG: protocol-relative '//host/x.png' is accepted as a 'local' path (startsWith('/'))", async () => {
+    it("BUG: protocol-relative '//host/x.png' is accepted as a 'local' path (startsWith('/'))", async () => {
       expect(await poster("//evil.example/x.png")).toBe(FALLBACK_POSTER);
     });
   });
@@ -369,7 +369,7 @@ describe("searchCatalogMovies", () => {
     });
   });
 
-  it.fails("BUG: LIKE wildcards in the query are not escaped — `imdb_id ilike $1` makes q='%' match every movie", async () => {
+  it("BUG: LIKE wildcards in the query are not escaped — `imdb_id ilike $1` makes q='%' match every movie", async () => {
     await searchCatalogMovies({ query: "%" });
     const [sql] = searchCalls()[0]!;
     // The raw (unescaped) search string must not be used as an ILIKE pattern.

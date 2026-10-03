@@ -19,11 +19,13 @@ import {
   deleteMovieById,
   updateMovieOverride,
 } from "@/lib/movie-edit-store";
-import { fetchImdbMedia, fetchImdbRelated } from "@/lib/movie-imdb-sync";
+import { IMDB_GRAPHQL_HEADERS, fetchImdbMedia, fetchImdbRelated, isImdbTitleId } from "@/lib/movie-imdb-sync";
 import { reviewSubmission } from "@/lib/moderation-store";
 import { parseMovieIdentityEdits } from "@/lib/movie-identity-form";
 import {
   SUBMISSION_LIMITS,
+  parseReleaseYear,
+  parseStrictInt,
   cleanContentWarnings,
   cleanRodentTypes,
   cleanText,
@@ -79,8 +81,9 @@ export async function updateMovieInfo(formData: FormData) {
 
   await updateMovieOverride(movie.id, {
     title: String(formData.get("title") ?? "").trim() || movie.title,
-    releaseYear: Number(formData.get("releaseYear") ?? movie.releaseYear),
-    runtimeMinutes: Number(formData.get("runtimeMinutes") ?? movie.runtimeMinutes),
+    // Blank / junk / out-of-range input keeps the current value instead of writing 0, NaN or an int4 overflow.
+    releaseYear: parseReleaseYear(formData.get("releaseYear")) ?? movie.releaseYear,
+    runtimeMinutes: parseStrictInt(formData.get("runtimeMinutes"), 1, 1_000) ?? movie.runtimeMinutes,
     summary: String(formData.get("summary") ?? "").trim() || movie.summary,
     posterUrl: String(formData.get("posterUrl") ?? "").trim() || movie.posterUrl,
     genres: genresRaw
@@ -102,8 +105,9 @@ export async function updateMovieInfo(formData: FormData) {
         ? countriesRaw.split(",").map((item) => item.trim()).filter(Boolean)
         : movie.metadata.productionCountries,
       overrideAccent,
-      pagePalette: undefined,
-      pagePaletteDark: undefined,
+      // null (not undefined) so the JSONB merge overwrites the stored value; undefined is dropped.
+      pagePalette: null,
+      pagePaletteDark: null,
     },
   });
 
@@ -122,6 +126,8 @@ type RatFactsResult =
 
 /** Fetch IMDb trivia and classify the result for toast feedback. */
 async function fetchRatFacts(imdbId: string): Promise<RatFactsResult> {
+  // The id is interpolated into the GraphQL document, so only a plain title id may reach it.
+  if (!isImdbTitleId(imdbId)) return { status: "api-error" };
   const IMDB_GRAPHQL_URL = "https://api.graphql.imdb.com/";
   const query = `
     query {
@@ -141,7 +147,7 @@ async function fetchRatFacts(imdbId: string): Promise<RatFactsResult> {
   try {
     res = await fetch(IMDB_GRAPHQL_URL, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: IMDB_GRAPHQL_HEADERS,
       body: JSON.stringify({ query }),
       cache: "no-store",
       signal: AbortSignal.timeout(30_000),
@@ -174,6 +180,7 @@ async function fetchRatFacts(imdbId: string): Promise<RatFactsResult> {
 
 /** Fetch up to 20 IMDb user reviews. Returns an empty array on any failure. */
 async function fetchReviewsForResync(imdbId: string): Promise<ImdbReview[]> {
+  if (!isImdbTitleId(imdbId)) return [];
   const IMDB_GRAPHQL_URL = "https://api.graphql.imdb.com/";
   const query = `
     query {
@@ -196,7 +203,7 @@ async function fetchReviewsForResync(imdbId: string): Promise<ImdbReview[]> {
   try {
     const res = await fetch(IMDB_GRAPHQL_URL, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: IMDB_GRAPHQL_HEADERS,
       body: JSON.stringify({ query }),
       cache: "no-store",
       signal: AbortSignal.timeout(30_000),

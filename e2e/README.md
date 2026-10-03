@@ -33,5 +33,5 @@ CI runs the same thing against a Postgres service container (job “End-to-end (
 ## Conventions
 
 - Prefer role/label selectors; assert on the database as well as the UI for anything that writes.
-- A known bug is marked `test.fail(true, "reason")` (shows as ✘ but counts as passing) so it stays
-  visible and flips red when fixed — remove the marker then.
+- A known, not-yet-fixed bug is marked `test.fail(true, "reason")` (shows as ✘ but counts as
+  passing) so it stays visible and flips red when fixed — remove the marker then.

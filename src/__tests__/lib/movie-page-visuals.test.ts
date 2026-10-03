@@ -144,7 +144,7 @@ describe("getSyncedMoviePageVisuals", () => {
     });
   });
 
-  it.fails("BUG: when banner and poster are the same URL, a failing extraction is retried 3x on the identical URL (up to 3x14s)", async () => {
+  it("BUG: when banner and poster are the same URL, a failing extraction is retried 3x on the identical URL (up to 3x14s)", async () => {
     h.extract.mockResolvedValue(null);
     await getSyncedMoviePageVisuals(movie({ poster: "https://img.example/only.jpg" }));
     const distinct = new Set(h.extract.mock.calls.map(([u]) => u));

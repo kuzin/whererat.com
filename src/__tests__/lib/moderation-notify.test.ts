@@ -195,7 +195,7 @@ describe("content", () => {
     expect(html).toContain("&lt;script&gt;");
   });
 
-  it.fails("BUG: a CR/LF in the public sighting title ends up in the Subject header (submitter-notify strips it, this path does not)", async () => {
+  it("BUG: a CR/LF in the public sighting title ends up in the Subject header (submitter-notify strips it, this path does not)", async () => {
     await notifyOwnerOfNewSubmission(submission({ title: "Nice rat\r\nBcc: attacker@evil.example" }));
     expect(sent()[0]!.subject).not.toMatch(/[\r\n]/);
   });

@@ -4,6 +4,7 @@
  * so a misconfigured/missing RESEND_API_KEY can't break public submissions.
  */
 
+import { oneLine } from "@/lib/submission-input";
 import { getDbPool } from "@/lib/db";
 import { sendBrandedEmail } from "@/lib/email-send";
 import { renderBrandedEmail, type EmailContentBlock } from "@/lib/email-template";
@@ -38,7 +39,7 @@ function buildSubmissionEmail(submission: Submission) {
       : "";
 
   const moderationUrl = `${siteUrl()}/moderation`;
-  const headline = submission.title?.trim() || `${movieLine}${episodePart}`;
+  const headline = oneLine(submission.title?.trim() || `${movieLine}${episodePart}`);
   const subject = `New sighting: ${headline}`;
 
   const isSeries = submission.imdbKind === "series";
