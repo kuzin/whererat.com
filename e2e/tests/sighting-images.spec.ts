@@ -125,6 +125,23 @@ test.describe("sighting images", () => {
     expect(await imagesOf("sub-forge")).toEqual([]);
   });
 
+  test("paging: the step with nowhere to go is plain text, not a link a keyboard can land on", async ({ page, login }) => {
+    for (let i = 0; i < 25; i++) {
+      await seedApproved(`sub-page-${i}`, `Paged rat ${i}`, `${i + 1}%`);
+    }
+    await login();
+    await page.goto("/moderation/images");
+    await expect(page.getByText("Showing 1–24 of 25")).toBeVisible();
+    await expect(page.getByRole("link", { name: "← Previous" })).toHaveCount(0);
+    await expect(page.getByText("← Previous")).toHaveAttribute("aria-disabled", "true");
+
+    await page.getByRole("link", { name: "Next →" }).click();
+    await expect(page).toHaveURL(/page=2/);
+    await expect(page.getByText("Showing 25–25 of 25")).toBeVisible();
+    await expect(page.getByRole("link", { name: "Next →" })).toHaveCount(0);
+    await expect(page.getByRole("link", { name: "← Previous" })).toBeVisible();
+  });
+
   test("only the owner gets it: a moderator sees no button and is sent back from the page", async ({ page, login }) => {
     await seedApproved("sub-mod", "Moderator cannot edit", "10%");
     await login(MODERATOR);

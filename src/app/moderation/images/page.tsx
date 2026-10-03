@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
-import type { CSSProperties } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import type { Metadata } from "next";
 import { MODERATOR_SESSION_COOKIE } from "@/lib/auth";
 import { verifyModeratorSession } from "@/lib/moderator-session";
@@ -51,6 +51,19 @@ function thumbStyle(slot: SightingImageSlot): CSSProperties {
     transform: zoom !== 1 ? `scale(${zoom})` : undefined,
     transformOrigin: `${x}% ${y}%`,
   };
+}
+
+/** A pagination step; with no page to go to it is plain text, so keyboards can't land on it. */
+function PageLink({ href, children }: { href?: string; children: ReactNode }) {
+  return href ? (
+    <Link href={href} className="wr-btn-ghost">
+      {children}
+    </Link>
+  ) : (
+    <span aria-disabled="true" className="wr-btn-ghost cursor-not-allowed opacity-40">
+      {children}
+    </span>
+  );
 }
 
 function sightingDetails(sighting: Sighting, movie: Movie): string {
@@ -237,23 +250,11 @@ export default async function SightingImagesPage({
 
       {view.pageCount > 1 ? (
         <div className="mt-6 flex items-center justify-between gap-3">
-          <Link
-            href={pagePath(view.page - 1)}
-            className={`wr-btn-ghost ${view.page === 1 ? "pointer-events-none cursor-not-allowed opacity-40" : ""}`}
-            aria-disabled={view.page === 1}
-          >
-            ← Previous
-          </Link>
+          <PageLink href={view.page > 1 ? pagePath(view.page - 1) : undefined}>← Previous</PageLink>
           <p className="text-sm font-semibold text-stone-600 dark:text-stone-300">
             Showing {view.start + 1}–{view.start + view.pageItems.length} of {view.total}
           </p>
-          <Link
-            href={pagePath(view.page + 1)}
-            className={`wr-btn-ghost ${view.page === view.pageCount ? "pointer-events-none cursor-not-allowed opacity-40" : ""}`}
-            aria-disabled={view.page === view.pageCount}
-          >
-            Next →
-          </Link>
+          <PageLink href={view.page < view.pageCount ? pagePath(view.page + 1) : undefined}>Next →</PageLink>
         </div>
       ) : null}
 
