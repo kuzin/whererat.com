@@ -80,7 +80,7 @@ export default async function Home({
 }: {
   searchParams?: SearchParams;
 }) {
-  const PAGE_SIZE = 12;
+  const PAGE_SIZE = 50;
   const params = searchParams ? await searchParams : {};
   const query = single(params.q) ?? "";
   const genre = single(params.genre) ?? "all";
