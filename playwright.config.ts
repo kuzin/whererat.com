@@ -24,6 +24,8 @@ export const serverEnv = {
   CRON_SECRET: "e2e-cron-secret",
   S3_PUBLIC_BASE_URL: "",
   WHERERAT_OFFLINE: "1",
+  // Specs seed the database directly, which can't invalidate Next's data cache; read live.
+  WHERERAT_CATALOG_CACHE_SECONDS: "0",
   PORT: String(E2E_PORT),
 };
 

@@ -9,47 +9,22 @@ vi.mock("@/lib/sighting-edit-store", () => ({
   getSightingOverrides: vi.fn(),
   getDeletedSightingIds: vi.fn(),
 }));
-vi.mock("@/lib/movie-catalog", () => ({
+// Real lookup/resolution logic; only the DB-backed catalog read is faked.
+vi.mock("@/lib/movie-catalog", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/movie-catalog")>()),
   findCatalogMovieForSubmission: vi.fn(),
+  getCatalogIdentities: vi.fn(),
 }));
 vi.mock("@/lib/submitter-notify", () => ({ notifySubmitterOfDecision: vi.fn() }));
 vi.mock("@/lib/community-movie-store", () => ({ ensureCommunityMovieForSubmission: vi.fn() }));
 
 import { getRodentTypesByMovieId, getMovieIdsWithRodentType } from "@/lib/moderation-store";
 import { getSightingOverrides, getDeletedSightingIds } from "@/lib/sighting-edit-store";
-import { findCatalogMovieForSubmission } from "@/lib/movie-catalog";
-import type { Movie } from "@/lib/whererat";
-
-/** Only `id` is read by the code under test; the rest satisfies the Movie shape. */
-function movieStub(id: string): Movie {
-  return {
-    id,
-    slug: id,
-    title: `Movie ${id}`,
-    releaseYear: 2020,
-    runtimeMinutes: 100,
-    genres: [],
-    posterTone: "bg-stone-700",
-    posterUrl: "",
-    backdropUrl: "",
-    posterAlt: "",
-    externalIds: { imdb: "tt0000001" },
-    summary: "",
-    metadata: {
-      tagline: "",
-      rating: "",
-      director: "",
-      originalLanguage: "",
-      productionCountries: [],
-      metadataProvider: "IMDb seed",
-      lastSyncedAt: "2026-01-01",
-    },
-  };
-}
+import { getCatalogIdentities } from "@/lib/movie-catalog";
 
 const mockGetSightingOverrides = vi.mocked(getSightingOverrides);
 const mockGetDeletedSightingIds = vi.mocked(getDeletedSightingIds);
-const mockFindCatalogMovie = vi.mocked(findCatalogMovieForSubmission);
+const mockGetCatalogIdentities = vi.mocked(getCatalogIdentities);
 
 type SubmissionRow = {
   id: string;
@@ -57,6 +32,13 @@ type SubmissionRow = {
   imdb_id: string | null;
   movie_title: string;
   rodent_types: string[] | null;
+  // NOT NULL columns in the real table; the merge builds a full sighting from them.
+  submitted_by: string;
+  timestamp_code: string;
+  description: string;
+  spoiler: boolean;
+  approximate_rat_count: number;
+  created_at: string;
 };
 
 /**
@@ -84,6 +66,12 @@ function submission(over: Partial<SubmissionRow> = {}): SubmissionRow {
     imdb_id: "tt0000001",
     movie_title: "Movie One",
     rodent_types: ["rat"],
+    submitted_by: "Tester",
+    timestamp_code: "10%",
+    description: "A rat.",
+    spoiler: false,
+    approximate_rat_count: 1,
+    created_at: "2026-01-01T00:00:00.000Z",
     ...over,
   };
 }
@@ -92,9 +80,10 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockGetSightingOverrides.mockResolvedValue({});
   mockGetDeletedSightingIds.mockResolvedValue(new Set());
-  mockFindCatalogMovie.mockImplementation(async ({ imdbId }) =>
-    imdbId === "tt0000001" ? movieStub("movie-1") : undefined,
-  );
+  // One catalog movie; submissions with any other IMDb id resolve to nothing.
+  mockGetCatalogIdentities.mockResolvedValue([
+    { id: "movie-1", title: "Movie One", externalIds: { imdb: "tt0000001" } },
+  ]);
 });
 
 describe("getRodentTypesByMovieId", () => {

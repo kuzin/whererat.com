@@ -1,5 +1,6 @@
 import type { Sighting } from "@/lib/whererat";
 import { getDbPool } from "@/lib/db";
+import { invalidateCatalogCache } from "@/lib/catalog-cache";
 
 export async function getSightingOverrides() {
   const pool = getDbPool();
@@ -86,6 +87,7 @@ export async function updateSightingOverride(
       [sightingId, override.imageUrl, override.imageAlt ?? null],
     );
   }
+  invalidateCatalogCache();
 }
 
 export async function deleteSightingById(sightingId: string) {
@@ -95,4 +97,5 @@ export async function deleteSightingById(sightingId: string) {
     `update sightings set is_deleted = true, updated_at = now() where id = $1`,
     [sightingId],
   );
+  invalidateCatalogCache();
 }

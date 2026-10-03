@@ -126,3 +126,25 @@ export async function getMoviePageVisuals(movie: Movie): Promise<MoviePageVisual
     usingOverrideAccent,
   };
 }
+
+/**
+ * Just the page palettes, for list views. Identical result to `getMoviePageVisuals(...)`'s
+ * `palette` / `paletteDark`, but when the movie already carries a manual or sync-cached
+ * palette it skips the TMDB lookup and image fetch that the full visuals always perform.
+ */
+export async function getMoviePagePalettes(
+  movie: Movie,
+): Promise<{ palette: MoviePagePalette | null; paletteDark: MoviePagePalette | null }> {
+  const { palette: manual } = parseManualPalette(movie);
+  const manualDark = parseManualDarkPalette(movie);
+  const cached = parsePaletteObject(movie.metadata.syncedPalette);
+
+  if (cached) {
+    const cachedDark = parsePaletteObject(movie.metadata.syncedPaletteDark) ?? deriveDarkMoviePagePalette(cached);
+    return { palette: manual ?? cached, paletteDark: manualDark ?? cachedDark };
+  }
+  if (manual && manualDark) return { palette: manual, paletteDark: manualDark };
+
+  const visuals = await getMoviePageVisuals(movie);
+  return { palette: visuals.palette, paletteDark: visuals.paletteDark };
+}
