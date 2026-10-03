@@ -6,6 +6,10 @@
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
+// Real scrypt (64 MiB, ~100-200 ms each) with several hashes per test: give it room
+// when the machine is busy (e.g. under coverage instrumentation).
+vi.setConfig({ testTimeout: 30_000 });
+
 const holder = vi.hoisted(() => ({ pool: undefined as unknown }));
 vi.mock("@/lib/db", () => ({ getDbPool: () => holder.pool }));
 
