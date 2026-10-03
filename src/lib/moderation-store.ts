@@ -3,6 +3,7 @@ import {
   reviewActions as seedReviewActions,
   submissions as seedSubmissions,
   getSubmissionSightingTitle,
+  type Movie,
   type ReviewAction,
   type Sighting,
   type Submission,
@@ -13,7 +14,11 @@ import { getDeletedSightingIds, getSightingOverrides } from "@/lib/sighting-edit
 import {
   ensureCommunityMovieForSubmission,
 } from "@/lib/community-movie-store";
-import { findCatalogMovieForSubmission } from "@/lib/movie-catalog";
+import {
+  findCatalogMovieForSubmission,
+  getCatalogMovies,
+  matchCatalogMovieForSubmission,
+} from "@/lib/movie-catalog";
 import { getDbPool, withTransaction } from "@/lib/db";
 import { isReviewDecision, type ReviewDecision } from "@/lib/review-decision";
 import { parseReleaseYear, parseSeasonOrEpisode } from "@/lib/submission-input";
@@ -419,11 +424,20 @@ async function submissionToSyntheticSighting(
 ): Promise<Sighting | undefined> {
   const movie = await findCatalogMovieForSubmission(submission);
   if (!movie || movie.id !== expectedMovieId) return undefined;
+  return buildSyntheticSighting(submission, movie.id, reviewedAtISO);
+}
+
+/** The public sighting an approved submission becomes once filed under `movieId`. */
+function buildSyntheticSighting(
+  submission: Submission,
+  movieId: string,
+  reviewedAtISO: string,
+): Sighting {
   const name = submission.submittedBy.trim();
   const headline = getSubmissionSightingTitle(submission);
   return {
     id: `queue-${submission.id}`,
-    movieId: movie.id,
+    movieId,
     timestamp: submission.timestamp,
     title: headline,
     description: submission.description,
@@ -512,46 +526,30 @@ export async function getMovieIdsWithRodentType(rodentType: string): Promise<Set
   return ids;
 }
 
-export async function getMergedSightingsForMovie(movieId: string): Promise<Sighting[]> {
-  const pool = getDbPool();
-  const [
-    { submissions: storedSubs, reviewActions },
-    baseRows,
-    sightingOverrides,
-    deletedSightingIds,
-  ] =
-    await Promise.all([
-      readModerationStore(),
-      pool.query<{
-        id: string;
-        movie_id: string;
-        timestamp_code: string;
-        title: string | null;
-        description: string;
-        prominence: Sighting["prominence"];
-        scene_type: Sighting["sceneType"];
-        spoiler: boolean;
-        confidence: Sighting["confidence"];
-        verification_state: Sighting["verificationState"];
-        verified_by: string;
-        source_ids: string[];
-        curator_note: string | null;
-        approximate_rat_count: number | null;
-        submitter_name: string | null;
-        submission_reviewed_at: string | null;
-        content_warnings: string[] | null;
-        rodent_types: string[] | null;
-        other_rodent_label: string | null;
-      }>(
-        `select *
-         from sightings
-         where movie_id = $1 and is_deleted = false`,
-        [movieId],
-      ),
-      getSightingOverrides(),
-      getDeletedSightingIds(),
-    ]);
-  const base: Sighting[] = baseRows.rows.map((row) => ({
+type BaseSightingRow = {
+  id: string;
+  movie_id: string;
+  timestamp_code: string;
+  title: string | null;
+  description: string;
+  prominence: Sighting["prominence"];
+  scene_type: Sighting["sceneType"];
+  spoiler: boolean;
+  confidence: Sighting["confidence"];
+  verification_state: Sighting["verificationState"];
+  verified_by: string;
+  source_ids: string[];
+  curator_note: string | null;
+  approximate_rat_count: number | null;
+  submitter_name: string | null;
+  submission_reviewed_at: string | null;
+  content_warnings: string[] | null;
+  rodent_types: string[] | null;
+  other_rodent_label: string | null;
+};
+
+function toBaseSighting(row: BaseSightingRow): Sighting {
+  return {
     id: row.id,
     movieId: row.movie_id,
     timestamp: row.timestamp_code,
@@ -571,7 +569,71 @@ export async function getMergedSightingsForMovie(movieId: string): Promise<Sight
     contentWarnings: (row.content_warnings?.length ? row.content_warnings : undefined),
     rodentTypes: (row.rodent_types?.length ? row.rodent_types : undefined),
     otherRodentLabel: row.other_rodent_label?.trim() || undefined,
-  }));
+  };
+}
+
+export type CatalogSighting = { sighting: Sighting; movie: Movie };
+
+/**
+ * Every live sighting in the catalog, each with the movie it is filed under. Same
+ * merged view as {@link getMergedSightingsForMovie} (base rows + approved submissions,
+ * overrides applied, soft-deleted sightings dropped), but with one catalog read for
+ * all of them. Sightings whose movie is gone from the catalog are left out.
+ */
+export async function getAllMergedSightings(): Promise<CatalogSighting[]> {
+  const pool = getDbPool();
+  const [{ submissions, reviewActions }, movies, baseRows, sightingOverrides, deletedSightingIds] =
+    await Promise.all([
+      readModerationStore(),
+      getCatalogMovies(),
+      pool.query<BaseSightingRow>(`select * from sightings where is_deleted = false`),
+      getSightingOverrides(),
+      getDeletedSightingIds(),
+    ]);
+  const moviesById = new Map(movies.map((movie) => [movie.id, movie]));
+
+  const entries: CatalogSighting[] = [];
+  for (const row of baseRows.rows) {
+    const movie = moviesById.get(row.movie_id);
+    if (movie) entries.push({ sighting: toBaseSighting(row), movie });
+  }
+  for (const submission of submissions) {
+    if (submission.status !== "approved") continue;
+    const movie = matchCatalogMovieForSubmission(movies, submission);
+    if (!movie) continue;
+    const reviewedAt =
+      submissionApprovalTimestamp(reviewActions, submission.id) ?? new Date(0).toISOString();
+    entries.push({ sighting: buildSyntheticSighting(submission, movie.id, reviewedAt), movie });
+  }
+
+  return entries
+    .filter(({ sighting }) => !deletedSightingIds.has(sighting.id))
+    .map(({ sighting, movie }) => ({
+      sighting: { ...sighting, ...(sightingOverrides[sighting.id] ?? {}) },
+      movie,
+    }));
+}
+
+export async function getMergedSightingsForMovie(movieId: string): Promise<Sighting[]> {
+  const pool = getDbPool();
+  const [
+    { submissions: storedSubs, reviewActions },
+    baseRows,
+    sightingOverrides,
+    deletedSightingIds,
+  ] =
+    await Promise.all([
+      readModerationStore(),
+      pool.query<BaseSightingRow>(
+        `select *
+         from sightings
+         where movie_id = $1 and is_deleted = false`,
+        [movieId],
+      ),
+      getSightingOverrides(),
+      getDeletedSightingIds(),
+    ]);
+  const base: Sighting[] = baseRows.rows.map(toBaseSighting);
 
   const queueCandidates = storedSubs.filter((s) => s.status === "approved");
   const fromQueueResolved = await Promise.all(

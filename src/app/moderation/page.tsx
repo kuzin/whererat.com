@@ -29,7 +29,7 @@ import {
 } from "@/lib/auth";
 import { verifyModeratorSession } from "@/lib/moderator-session";
 import { moderateSubmission, removeSubmission, rereviewSubmission, resyncAllMovies } from "./actions";
-import { readModerationStore } from "@/lib/moderation-store";
+import { getAllMergedSightings, readModerationStore } from "@/lib/moderation-store";
 import {
   findCatalogMovieForSubmission,
   getCatalogMovieByImdbId,
@@ -37,6 +37,7 @@ import {
 } from "@/lib/movie-catalog";
 import { ResyncAllButton } from "@/components/moderation/resync-all-button";
 import { readUserStore } from "@/lib/user-store";
+import { sightingImageCount } from "@/lib/sighting-images-view";
 
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 
@@ -156,6 +157,10 @@ export default async function ModerationPage({
   );
 
   const stats = await getCatalogStatsWithCommunity();
+  const liveSightings = await getAllMergedSightings();
+  const sightingsWithoutImages = liveSightings.filter(
+    ({ sighting }) => sightingImageCount(sighting) === 0,
+  ).length;
   const userStore = await readUserStore();
   const trustSignalAccounts = [...userStore.accounts]
     .map((account) => ({
@@ -224,6 +229,25 @@ export default async function ModerationPage({
       ) : null}
 
       <section className="grid grid-cols-1 gap-6">
+        <div className="order-1 wr-card-soft flex flex-col gap-3 p-5 sm:flex-row sm:items-center sm:justify-between sm:px-7">
+          <div>
+            <h2 className="text-lg font-black text-stone-950 dark:text-stone-100">Sighting images</h2>
+            <p className="mt-0.5 text-sm text-stone-600 dark:text-stone-400">
+              {liveSightings.length === 0
+                ? "No live sightings yet."
+                : sightingsWithoutImages > 0
+                  ? `${sightingsWithoutImages} of ${liveSightings.length} live sightings have no images yet.`
+                  : `All ${liveSightings.length} live sightings have images.`}
+            </p>
+          </div>
+          <Link
+            href={sightingsWithoutImages > 0 ? "/moderation/images?filter=without" : "/moderation/images"}
+            className="wr-btn-ghost shrink-0 self-start sm:self-auto"
+          >
+            Manage images
+          </Link>
+        </div>
+
         <aside className="contents">
           <div className="order-3 wr-card-soft space-y-3 p-5 sm:p-7">
             <h2 className="text-xl font-black text-stone-950 dark:text-stone-100">Queue health</h2>

@@ -101,11 +101,23 @@ export async function findCatalogMovieForSubmission(submission: {
   movieTitle: string;
 }): Promise<Movie | undefined> {
   const imdbId = normalizeImdbId(submission.imdbId ?? "");
-  if (imdbId) return getCatalogMovieByImdbId(imdbId);
+  if (!imdbId && !submission.movieTitle.trim()) return undefined;
+  return matchCatalogMovieForSubmission(await getCatalogMovies(), submission);
+}
+
+/**
+ * Same rules as {@link findCatalogMovieForSubmission}, against a movie list the
+ * caller already loaded — for resolving many submissions with one catalog read.
+ */
+export function matchCatalogMovieForSubmission(
+  movies: Movie[],
+  submission: { imdbId?: string | null; movieTitle: string },
+): Movie | undefined {
+  const imdbId = normalizeImdbId(submission.imdbId ?? "");
+  if (imdbId) return movies.find((movie) => movie.externalIds.imdb === imdbId);
   const wanted = submission.movieTitle.trim().toLowerCase();
   if (!wanted) return undefined;
-  const allMovies = await getCatalogMovies();
-  return allMovies.find((movie) => movie.title.trim().toLowerCase() === wanted);
+  return movies.find((movie) => movie.title.trim().toLowerCase() === wanted);
 }
 
 // SQL for catalog search with pg_trgm fuzzy matching + sighting content
