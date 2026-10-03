@@ -1,17 +1,24 @@
 "use server";
 
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 import { redirect } from "next/navigation";
 import {
   createModeratorSession,
   MODERATOR_SESSION_COOKIE,
 } from "@/lib/auth";
+import { MAX_PASSWORD_LENGTH } from "@/lib/password-hash";
+import { clientIpFromForwardedFor, isRateLimited } from "@/lib/rate-limit";
+import { safeReturnTo } from "@/lib/submission-input";
 import { authenticateStoredModerator } from "@/lib/user-store";
 
-function safeNextPath(value: FormDataEntryValue | null) {
-  const next = String(value ?? "/moderation");
+// Each attempt costs a real scrypt computation, and without a cap the owner
+// password could be guessed freely. Per client IP, shared across instances.
+const LOGIN_ATTEMPTS_PER_WINDOW = 10;
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 
-  return next.startsWith("/") && !next.startsWith("//") ? next : "/moderation";
+// Same-site relative paths only: `//host` and `/\host` are treated as off-site by browsers.
+function safeNextPath(value: FormDataEntryValue | null) {
+  return safeReturnTo(typeof value === "string" ? value : undefined, "/moderation");
 }
 
 function withToast(path: string, toast: string) {
@@ -21,10 +28,19 @@ function withToast(path: string, toast: string) {
 }
 
 export async function loginModerator(formData: FormData) {
-  const username = String(formData.get("username") ?? "");
+  const username = String(formData.get("username") ?? "").slice(0, 100);
   const password = String(formData.get("password") ?? "");
   const next = safeNextPath(formData.get("next"));
-  const account = await authenticateStoredModerator(username, password);
+
+  const ip = clientIpFromForwardedFor((await headers()).get("x-forwarded-for"));
+  if (await isRateLimited({ key: `login:${ip}`, max: LOGIN_ATTEMPTS_PER_WINDOW, windowMs: LOGIN_WINDOW_MS })) {
+    redirect(`/login?error=too-many-attempts&next=${encodeURIComponent(next)}`);
+  }
+
+  const account =
+    password.length > MAX_PASSWORD_LENGTH
+      ? undefined
+      : await authenticateStoredModerator(username, password);
 
   if (!account) {
     redirect(`/login?error=invalid&next=${encodeURIComponent(next)}`);

@@ -56,6 +56,11 @@ const toastMessages: Record<string, { title: string; body: string; tone: ToastTo
     body: "That username or password did not work.",
     tone: "error",
   },
+  "too-many-attempts": {
+    title: "Too many login attempts",
+    body: "Please wait a few minutes before trying again.",
+    tone: "error",
+  },
   "moderation-saved": {
     title: "Edits saved",
     body: "The submission was updated and kept in the pending queue.",

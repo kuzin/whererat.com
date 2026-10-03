@@ -87,7 +87,7 @@ export function signForPurpose(purpose: string, payload: string): string {
   return createHmac("sha256", SESSION_SECRET).update(`${purpose}\n${payload}`).digest("base64url");
 }
 
-export function createModeratorSession(account: ModeratorAccount): string {
+export function createModeratorSession(account: Omit<ModeratorAccount, "password">): string {
   const sessionPayload: SignedSessionPayload = {
     id: account.id,
     username: account.username,
