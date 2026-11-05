@@ -76,6 +76,11 @@ const toastMessages: Record<string, { title: string; body: string; tone: ToastTo
     body: "Enter a movie or show title and a valid IMDb ID (tt1234567).",
     tone: "error",
   },
+  "moderation-stale": {
+    title: "Already handled",
+    body: "That sighting was already decided (another tab or moderator). Nothing was changed; the queue is up to date.",
+    tone: "info",
+  },
   "invalid-sighting": {
     title: "Not approved",
     body: "A sighting title, time in the film and description are required to approve.",
@@ -94,6 +99,16 @@ const toastMessages: Record<string, { title: string; body: string; tone: ToastTo
   "sighting-not-live": {
     title: "Sighting not saved",
     body: "It was denied or sent back to the queue while you were editing, so nothing was changed.",
+    tone: "error",
+  },
+  "sighting-images-saved": {
+    title: "Images saved",
+    body: "The sighting's images were updated.",
+    tone: "success",
+  },
+  "sighting-images-missing": {
+    title: "Sighting not found",
+    body: "It may have been deleted or sent back to the queue. Nothing was saved.",
     tone: "error",
   },
   "resync-success": {
@@ -218,7 +233,7 @@ export function ToastNotifications() {
   const toastKey = searchParams.get("toast") ?? searchParams.get("status") ?? searchParams.get("error");
   const toast = useMemo(() => {
     if (!toastKey) return undefined;
-    const base = toastMessages[toastKey];
+    const base = Object.hasOwn(toastMessages, toastKey) ? toastMessages[toastKey] : undefined;
     if (!base) return undefined;
 
     if (toastKey === "resync-all-complete") {

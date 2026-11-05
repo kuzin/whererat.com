@@ -625,7 +625,8 @@ export async function updateSightingInfo(formData: FormData) {
       redirect(`${returnTo}${sep}toast=invalid-movie`);
     }
     // An edit to a live sighting, not a fresh approval: no e-mail to the submitter, and the
-    // original approval keeps its time and reviewer.
+    // original approval keeps its time and reviewer. It also refuses (under a row lock) if
+    // the sighting was denied or requeued since the form was opened.
     const saved = await editApprovedSubmission({
       submissionId,
       moderator,
@@ -705,6 +706,7 @@ export async function deleteSighting(formData: FormData) {
       decision: "rejected",
       moderator,
       reason: "Removed from movie page.",
+      expectedStatus: "approved",
     });
   } else {
     await deleteSightingById(sightingId);

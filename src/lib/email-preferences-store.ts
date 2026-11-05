@@ -1,4 +1,5 @@
 import { getDbPool } from "@/lib/db";
+import { isSafeToken } from "@/lib/identifiers";
 
 export type EmailSubscriber = {
     email: string;
@@ -46,6 +47,8 @@ export async function getSubscriber(email: string): Promise<EmailSubscriber | un
  * Returns true if a matching opted-in row was found and updated, false otherwise.
  */
 export async function unsubscribeByToken(token: string): Promise<boolean> {
+    // A malformed token can't match (and a NUL byte would make Postgres throw a 500).
+    if (!isSafeToken(token)) return false;
     const pool = getDbPool();
     const result = await pool.query(
         `UPDATE email_preferences

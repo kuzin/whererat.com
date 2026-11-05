@@ -1,16 +1,16 @@
 /**
- * Local-only preview of the "new sighting" email sent to moderators.
+ * Owner-only preview of the "new sighting" email sent to moderators.
  * Renders fake data — no emails are sent from this route.
  */
 
 import { renderBrandedEmail, type EmailContentBlock } from "@/lib/email-template";
 import { formatApproximateRatLine } from "@/lib/whererat";
-import { assertPreviewAllowed, FAKE_SUBMISSION, PREVIEW_BASE_URL, wrapWithPreviewNav } from "../_fixtures";
+import { FAKE_SUBMISSION, requirePreviewOwner, wrapWithPreviewNav } from "../_fixtures";
 
-export function GET() {
-  assertPreviewAllowed();
+export async function GET(request: Request) {
+  const baseUrl = await requirePreviewOwner(request);
   const s = FAKE_SUBMISSION;
-  const moderationUrl = `${PREVIEW_BASE_URL}/moderation`;
+  const moderationUrl = `${baseUrl}/moderation`;
 
   const blocks: EmailContentBlock[] = [
     {
@@ -39,7 +39,7 @@ export function GET() {
     preheader: `${s.movieTitle} (${s.movieYear}) — submitted by ${s.submittedBy}`,
     heading: s.title!,
     blocks,
-    baseUrl: PREVIEW_BASE_URL,
+    baseUrl: baseUrl,
   });
 
   return new Response(wrapWithPreviewNav(html, "moderation"), {

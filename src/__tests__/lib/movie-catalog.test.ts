@@ -205,13 +205,21 @@ describe("lookups", () => {
   });
 
   it("getCatalogMovieBySlug is a single bound-parameter row read, not a catalog scan", async () => {
-    await getCatalogMovieBySlug("m1-slug' OR '1'='1");
+    await getCatalogMovieBySlug("ratatouille-2007");
     expect(h.query).toHaveBeenCalledTimes(1);
     const [sql, params] = h.query.mock.calls[0]!;
     expect(sql).toMatch(/where slug = \$1 and is_deleted = false/);
     expect(sql).toMatch(/limit 1/);
-    expect(params).toEqual(["m1-slug' OR '1'='1"]);
+    expect(params).toEqual(["ratatouille-2007"]);
   });
+
+  it.each(["m1-slug' OR '1'='1", "a\u0000b", "\u0000", "", "x".repeat(201), "../etc/passwd", "a b", "\ufffd\ufffd"])(
+    "getCatalogMovieBySlug(%j) matches nothing and never queries (a NUL byte would be a Postgres error / 500)",
+    async (slug) => {
+      expect(await getCatalogMovieBySlug(slug)).toBeUndefined();
+      expect(h.query).not.toHaveBeenCalled();
+    },
+  );
 
   it("getCatalogMovieBySlug hides a row without a valid IMDb id, like the full catalog does", async () => {
     h.movieRows = [row("bad", "Broken", "not-an-id")];

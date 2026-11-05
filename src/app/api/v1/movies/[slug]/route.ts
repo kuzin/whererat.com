@@ -9,7 +9,13 @@ type RouteContext = { params: Promise<{ slug: string }> };
 
 export async function GET(request: NextRequest, context: RouteContext) {
   const { slug: rawSlug } = await context.params;
-  const slug = decodeURIComponent(rawSlug);
+  // Next may already have decoded the param; a malformed escape must be a 404, not a 500.
+  let slug = rawSlug;
+  try {
+    slug = decodeURIComponent(rawSlug);
+  } catch {
+    // keep the raw value; validation below rejects it
+  }
 
   const url = new URL(request.url);
   const sort = url.searchParams.get("sort");

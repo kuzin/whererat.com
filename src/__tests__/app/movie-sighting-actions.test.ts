@@ -143,7 +143,7 @@ const editArg = () => {
 beforeEach(() => {
   vi.clearAllMocks();
   h.session = MOD;
-  mockReview.mockResolvedValue(undefined);
+  mockReview.mockResolvedValue({ applied: true });
   mockEdit.mockResolvedValue(true);
   mockBySlug.mockResolvedValue(movie("ratatouille", "tt0382932"));
   mockByImdb.mockResolvedValue(undefined);
@@ -468,5 +468,15 @@ describe("returnTo: redirects stay on this site", () => {
     mockByImdb.mockResolvedValue(movie("life-2017", "tt5442430"));
     const r = await run(updateSightingInfo, sightingForm({ imdbId: "tt5442430", movieTitle: "Life", returnTo: "https://evil.example" }));
     expect(r.redirect).toBe("/movies/life-2017?toast=sighting-saved");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Stale edits are covered under "queue- sightings are edited in place" above:
+// editApprovedSubmission only saves an approved sighting (toast=sighting-not-live).
+describe("queue- sightings: stale forms on the movie page", () => {
+  it("deleting acts only on an APPROVED sighting", async () => {
+    await run(deleteSighting, sightingForm());
+    expect(mockReview.mock.calls.at(-1)![0]).toMatchObject({ decision: "rejected", expectedStatus: "approved" });
   });
 });

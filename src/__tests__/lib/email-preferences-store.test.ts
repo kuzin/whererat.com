@@ -110,3 +110,10 @@ describe("unsubscribeByToken", () => {
     expect(await unsubscribeByToken("tok")).toBe(false);
   });
 });
+
+describe("unsubscribeByToken: malformed tokens never reach the database", () => {
+  it.each(["a\u0000b", "\u0000", "", "x".repeat(500), "a b", "é"])("%j is simply 'not found'", async (token) => {
+    expect(await unsubscribeByToken(token)).toBe(false);
+    expect(query).not.toHaveBeenCalled();
+  });
+});

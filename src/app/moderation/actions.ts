@@ -194,31 +194,39 @@ export async function moderateSubmission(formData: FormData) {
       ? { curatorNote }
       : undefined;
 
+  // The queue only ever acts on pending items. If another tab, another moderator or a
+  // double click already decided this one, nothing is written (see reviewSubmission).
+  const STALE = "/moderation?toast=moderation-stale";
+
   if (decision === "edited and approved") {
-    await reviewSubmission({
+    const result = await reviewSubmission({
       submissionId,
       decision,
       moderator,
       reason: reason || "Edited by moderator before approval.",
       edits,
+      expectedStatus: "pending",
     });
     revalidatePath("/moderation");
+    if (!result.applied) redirect(STALE);
     redirect("/moderation?toast=moderation-approved");
   }
 
   if (decision === "edited") {
-    await reviewSubmission({
+    const result = await reviewSubmission({
       submissionId,
       decision,
       moderator,
       reason: reason || "Saved edits in moderation modal.",
       edits,
+      expectedStatus: "pending",
     });
     revalidatePath("/moderation");
+    if (!result.applied) redirect(STALE);
     redirect("/moderation?toast=moderation-saved");
   }
 
-  await reviewSubmission({
+  const result = await reviewSubmission({
     submissionId,
     decision,
     moderator,
@@ -227,8 +235,10 @@ export async function moderateSubmission(formData: FormData) {
         ? reason || "Rejected from moderation queue."
         : reason,
     edits,
+    expectedStatus: "pending",
   });
   revalidatePath("/moderation");
+  if (!result.applied) redirect(STALE);
   if (decision === "approved") {
     redirect("/moderation?toast=moderation-approved");
   }
@@ -281,17 +291,17 @@ export async function rereviewSubmission(formData: FormData) {
   if (!submissionId) {
     redirect(returnTo);
   }
-  await reviewSubmission({
+  const result = await reviewSubmission({
     submissionId,
     decision: "edited",
     moderator,
     reason: "Returned to pending queue for re-review.",
+    // Only something already decided can be sent back; a stale click on a pending one is a no-op.
+    expectedStatus: ["approved", "rejected"],
   });
   revalidatePath("/moderation");
-  const requeuedReturnTo = returnTo.includes("?")
-    ? `${returnTo}&toast=moderation-requeued`
-    : `${returnTo}?toast=moderation-requeued`;
-  redirect(requeuedReturnTo);
+  const toast = result.applied ? "moderation-requeued" : "moderation-stale";
+  redirect(returnTo.includes("?") ? `${returnTo}&toast=${toast}` : `${returnTo}?toast=${toast}`);
 }
 
 export async function createModerator(formData: FormData) {

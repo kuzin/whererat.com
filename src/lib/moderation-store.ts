@@ -3,6 +3,7 @@ import {
   reviewActions as seedReviewActions,
   submissions as seedSubmissions,
   getSubmissionSightingTitle,
+  type Movie,
   type ReviewAction,
   type Sighting,
   type Submission,
@@ -17,6 +18,7 @@ import {
   buildCatalogLookup,
   findCatalogMovieForSubmission,
   getCatalogIdentities,
+  getCatalogListMovies,
   resolveMovieForSubmission,
 } from "@/lib/movie-catalog";
 import { getDbPool, withTransaction } from "@/lib/db";
@@ -629,19 +631,48 @@ export async function getMergedSightingsForMovie(movieId: string): Promise<Sight
   return mergeSightings(await loadSightingSources(movieId), movieId).get(movieId) ?? [];
 }
 
+export type CatalogSighting = { sighting: Sighting; movie: Movie };
+
+/**
+ * Every visible sighting paired with the movie it is filed under, in catalog order — the
+ * same merged view the movie pages render, for moderation screens that span the catalog.
+ * `movie` comes from {@link getCatalogListMovies}: list fields only, not full metadata.
+ */
+export async function getAllMergedSightings(): Promise<CatalogSighting[]> {
+  const [byMovie, movies] = await Promise.all([getMergedSightingsByMovie(), getCatalogListMovies()]);
+  return movies.flatMap((movie) =>
+    (byMovie.get(movie.id) ?? []).map((sighting) => ({ sighting, movie })),
+  );
+}
+
+export type ReviewResult =
+  | { applied: true }
+  | { applied: false; reason: "not-found" | "stale"; currentStatus?: Submission["status"] };
+
+/**
+ * Applies a moderator's decision.
+ *
+ * `expectedStatus` is the status the moderator was looking at when they clicked (a page
+ * can be stale: another tab, another moderator, a double click). If the submission is
+ * no longer in that status nothing is written, emailed or logged and `applied: false` is
+ * returned. The check is repeated under a row lock inside the transaction, so two
+ * simultaneous clicks can't both win. Callers that omit it get the old unguarded behaviour.
+ */
 export async function reviewSubmission({
   submissionId,
   decision,
   moderator,
   reason,
   edits,
+  expectedStatus,
 }: {
   submissionId: string;
   decision: ReviewDecision;
   moderator: ModeratorSession;
   reason?: string;
   edits?: SubmissionEdits;
-}) {
+  expectedStatus?: Submission["status"] | Submission["status"][];
+}): Promise<ReviewResult> {
   // Anything else would fall through to "approved" below and then fail the audit-log
   // insert, leaving an approved submission with no catalog movie.
   if (!isReviewDecision(decision)) {
@@ -652,7 +683,12 @@ export async function reviewSubmission({
   const submission = state.submissions.find((item) => item.id === submissionId);
 
   if (!submission) {
-    return;
+    return { applied: false, reason: "not-found" };
+  }
+
+  const allowedStatuses = expectedStatus === undefined ? undefined : [expectedStatus].flat();
+  if (allowedStatuses && !allowedStatuses.includes(submission.status)) {
+    return { applied: false, reason: "stale", currentStatus: submission.status };
   }
 
   const status: Submission["status"] =
@@ -690,9 +726,29 @@ export async function reviewSubmission({
     note: reviewNote,
   };
 
-  await withTransaction((client) =>
-    writeReviewedSubmission(client, reviewedSubmission, nextReviewAction),
-  );
+  let lostRace = false;
+  let staleStatus: Submission["status"] | undefined;
+  await withTransaction(async (client) => {
+    if (allowedStatuses) {
+      // Authoritative re-check under a row lock: a concurrent decision commits first and
+      // this one then sees the new status and does nothing.
+      const locked = await client.query<{ status: Submission["status"] }>(
+        `select status from submissions where id = $1 for update`,
+        [submissionId],
+      );
+      const current = locked.rows[0]?.status;
+      if (!current || !allowedStatuses.includes(current)) {
+        lostRace = true;
+        staleStatus = current;
+        return;
+      }
+    }
+    await writeReviewedSubmission(client, reviewedSubmission, nextReviewAction);
+  });
+
+  if (lostRace) {
+    return { applied: false, reason: staleStatus ? "stale" : "not-found", currentStatus: staleStatus };
+  }
 
   // Approvals add/change public sightings and counts; rejections/edits can remove or alter them.
   invalidateCatalogCache();
@@ -701,6 +757,7 @@ export async function reviewSubmission({
     const emailDecision = decision === "rejected" ? "rejected" : "approved";
     notifySubmitterOfDecision(reviewedSubmission, emailDecision).catch(() => {});
   }
+  return { applied: true };
 }
 
 /**
