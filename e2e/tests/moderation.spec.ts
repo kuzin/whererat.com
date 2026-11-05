@@ -1,4 +1,5 @@
 import { test, expect } from "../fixtures";
+import { ADMIN, MODERATOR } from "../config";
 import { MOVIES, query, seedSubmission } from "../support/db";
 
 const card = (page: import("@playwright/test").Page, text: string) =>
@@ -148,6 +149,65 @@ test.describe("editing a title", () => {
     await expect(page).toHaveURL(/toast=moderation-saved/);
     const [row] = await query<{ movie_title: string }>(`select movie_title from submissions where id = 'sub-nul'`);
     expect(row!.movie_title).toBe("Ratatouille");
+  });
+});
+
+test.describe("editing a live sighting from its movie page", () => {
+  const ORIGINAL_APPROVAL = "2026-01-15T12:00:00.000Z";
+
+  async function seedApprovedByModerator(id: string, title: string) {
+    await seedSubmission({ id, movieTitle: "Ratatouille", imdbId: MOVIES.ratatouille.imdbId, title, status: "approved" });
+    await query(
+      `insert into review_actions (id, submission_id, movie_title, action, moderator_id, moderator_name, reviewed_at, note)
+       values ($1, $2, 'Ratatouille', 'approved', 'acct-mod', $3, $4, 'Approved.')`,
+      [`review-${id}`, id, MODERATOR.name, ORIGINAL_APPROVAL],
+    );
+  }
+
+  test("a typo fix is saved as an edit, not a second approval", async ({ page, login }) => {
+    await seedApprovedByModerator("sub-typo", "Rat on teh counter");
+    await login();
+    await page.goto(`/movies/${MOVIES.ratatouille.slug}?editSighting=queue-sub-typo`);
+    await page.getByLabel("Sighting title").fill("Rat on the counter");
+    await page.getByRole("button", { name: "Save sighting" }).click();
+    await expect(page).toHaveURL(/toast=sighting-saved/);
+    await expect(page.getByText("Rat on the counter").first()).toBeVisible();
+
+    const [sub] = await query<{ status: string; title: string }>(`select status, title from submissions where id = 'sub-typo'`);
+    expect(sub).toEqual({ status: "approved", title: "Rat on the counter" });
+    const audit = await query<{ action: string; moderator_name: string; note: string }>(
+      `select action, moderator_name, note from review_actions where submission_id = 'sub-typo' order by reviewed_at`,
+    );
+    expect(audit).toEqual([
+      { action: "approved", moderator_name: MODERATOR.name, note: "Approved." },
+      { action: "edited", moderator_name: ADMIN.name, note: "Edited from movie page." },
+    ]);
+
+    // Still approved at the original time, so it doesn't float to the top as a new sighting.
+    const res = await page.request.get(`/api/v1/movies/${MOVIES.ratatouille.slug}`);
+    expect(await res.text()).toContain(`"submissionReviewedAtISO":"${ORIGINAL_APPROVAL}"`);
+
+    // The edit isn't a review: the editor's count stays 0, the approver's stays 1.
+    await page.goto("/moderation");
+    const trust = page.getByRole("heading", { name: "User trust signals" }).locator("xpath=..");
+    await expect(trust.locator(".py-3", { hasText: ADMIN.name })).toContainText(/0\s*Reviews/);
+    await expect(trust.locator(".py-3", { hasText: MODERATOR.name })).toContainText(/1\s*Reviews/);
+  });
+
+  test("a sighting denied while its edit form was open is not re-published", async ({ page, login }) => {
+    await seedApprovedByModerator("sub-gone", "Soon denied rat");
+    await login();
+    await page.goto(`/movies/${MOVIES.ratatouille.slug}?editSighting=queue-sub-gone`);
+    await page.getByLabel("Sighting title").fill("Edited after denial");
+    await query(`update submissions set status = 'rejected' where id = 'sub-gone'`);
+    await page.getByRole("button", { name: "Save sighting" }).click();
+    await expect(page).toHaveURL(/toast=sighting-not-live/);
+
+    const [sub] = await query<{ status: string; title: string }>(`select status, title from submissions where id = 'sub-gone'`);
+    expect(sub).toEqual({ status: "rejected", title: "Soon denied rat" });
+    const audit = await query<{ action: string }>(`select action from review_actions where submission_id = 'sub-gone'`);
+    expect(audit).toEqual([{ action: "approved" }]);
+    await expect(page.getByText("Edited after denial")).toHaveCount(0);
   });
 });
 

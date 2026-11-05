@@ -20,7 +20,7 @@ import {
   updateMovieOverride,
 } from "@/lib/movie-edit-store";
 import { IMDB_GRAPHQL_HEADERS, fetchImdbMedia, fetchImdbRelated, isImdbTitleId } from "@/lib/movie-imdb-sync";
-import { reviewSubmission } from "@/lib/moderation-store";
+import { editApprovedSubmission, reviewSubmission } from "@/lib/moderation-store";
 import { parseMovieIdentityEdits } from "@/lib/movie-identity-form";
 import {
   SUBMISSION_LIMITS,
@@ -624,12 +624,13 @@ export async function updateSightingInfo(formData: FormData) {
       const sep = returnTo.includes("?") ? "&" : "?";
       redirect(`${returnTo}${sep}toast=invalid-movie`);
     }
-    const result = await reviewSubmission({
+    // An edit to a live sighting, not a fresh approval: no e-mail to the submitter, and the
+    // original approval keeps its time and reviewer. It also refuses (under a row lock) if
+    // the sighting was denied or requeued since the form was opened.
+    const saved = await editApprovedSubmission({
       submissionId,
-      decision: "edited and approved",
       moderator,
       reason,
-      expectedStatus: "approved", // a stale form must not re-approve something since rejected / requeued
       edits: {
         ...movieIdentity.edits,
         title,
@@ -647,8 +648,11 @@ export async function updateSightingInfo(formData: FormData) {
           rodentTypes.includes("other") && otherRodentLabel ? otherRodentLabel : undefined,
       },
     });
-    if (!result.applied) {
-      redirect(returnTo.includes("?") ? `${returnTo}&toast=moderation-stale` : `${returnTo}?toast=moderation-stale`);
+    if (!saved) {
+      // Denied or sent back to the queue since the form was opened; nothing was written.
+      revalidatePath(returnTo.split("?")[0] || `/movies/${slug}`);
+      const sep = returnTo.includes("?") ? "&" : "?";
+      redirect(`${returnTo}${sep}toast=sighting-not-live`);
     }
     // Re-homed under a different title: the sighting is no longer on this page.
     const newImdbId = movieIdentity.edits.imdbId;

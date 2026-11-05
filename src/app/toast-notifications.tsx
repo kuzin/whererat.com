@@ -96,6 +96,11 @@ const toastMessages: Record<string, { title: string; body: string; tone: ToastTo
     body: "The sighting has been updated.",
     tone: "success",
   },
+  "sighting-not-live": {
+    title: "Sighting not saved",
+    body: "It was denied or sent back to the queue while you were editing, so nothing was changed.",
+    tone: "error",
+  },
   "sighting-images-saved": {
     title: "Images saved",
     body: "The sighting's images were updated.",
